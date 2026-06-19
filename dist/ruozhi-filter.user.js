@@ -1276,63 +1276,55 @@
     }
   }
   const blacklistButtonInjected = /* @__PURE__ */ new WeakSet();
-  function ensureManualBlacklistStyles() {
-    if (document.getElementById("ruozhi-bl-style")) return;
-    const style = document.createElement("style");
-    style.id = "ruozhi-bl-style";
-    style.textContent = `
-.ruozhi-manual-bl-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  padding: 2px 8px;
-  font-size: 11px;
-  color: #999;
-  background: transparent;
-  border: 1px solid #e0e0e0;
-  border-radius: 4px;
-  cursor: pointer;
-  transition: all 0.15s;
-  user-select: none;
-  font-family: system-ui, -apple-system, sans-serif;
-  line-height: 18px;
-  white-space: nowrap;
-}
-.ruozhi-manual-bl-btn:hover {
-  color: #d9534f;
-  border-color: #d9534f;
-  background: #fff5f5;
-}
-.ruozhi-manual-bl-btn:active {
-  transform: scale(0.95);
-}
-.ruozhi-manual-bl-btn.ruozhi-bl-done {
-  color: #d9534f;
-  border-color: #d9534f;
-  background: #fff0f0;
-  cursor: default;
-  pointer-events: none;
-}
-`;
-    document.head.appendChild(style);
-  }
   function injectManualBlacklistButton(el, info) {
     if (blacklistButtonInjected.has(el)) return;
     blacklistButtonInjected.add(el);
-    ensureManualBlacklistStyles();
-    const btn = document.createElement("button");
-    btn.className = "ruozhi-manual-bl-btn";
-    btn.innerHTML = "🚫 拉黑";
+    const parent = el.parentNode;
+    if (!parent) return;
+    const btn = document.createElement("span");
+    btn.textContent = "🚫 拉黑";
     btn.title = `将 ${info.uname} 加入黑名单`;
+    Object.assign(btn.style, {
+      display: "inline-block",
+      marginLeft: "6px",
+      marginTop: "-2px",
+      padding: "0 6px",
+      fontSize: "11px",
+      color: "#aaa",
+      background: "rgba(255,255,255,0.85)",
+      border: "1px solid #e0e0e0",
+      borderRadius: "9px",
+      cursor: "pointer",
+      userSelect: "none",
+      fontFamily: "system-ui, -apple-system, sans-serif",
+      lineHeight: "17px",
+      verticalAlign: "middle",
+      transition: "color 0.15s, border-color 0.15s, background 0.15s"
+    });
+    btn.addEventListener("mouseenter", () => {
+      if (btn.dataset.done === "1") return;
+      Object.assign(btn.style, {
+        color: "#d9534f",
+        borderColor: "#d9534f",
+        background: "#fff5f5"
+      });
+    });
+    btn.addEventListener("mouseleave", () => {
+      if (btn.dataset.done === "1") return;
+      Object.assign(btn.style, {
+        color: "#aaa",
+        borderColor: "#e0e0e0",
+        background: "rgba(255,255,255,0.85)"
+      });
+    });
     btn.addEventListener("click", async (e) => {
       e.stopPropagation();
       e.preventDefault();
       if (!confirm(
         `确定要将用户 "${info.uname}" 加入黑名单吗？
 该用户的所有评论将被隐藏。`
-      )) {
+      ))
         return;
-      }
       try {
         const config = getConfig();
         await addToBlacklist({
@@ -1349,23 +1341,23 @@
         });
         console.log(TAG, `🚫 手动拉黑: ${info.uname}`);
         if (config.foldMode) {
-          foldEl(el, info, {
-            reason: "[手动拉黑]",
-            severity: "block"
-          });
+          foldEl(el, info, { reason: "[手动拉黑]", severity: "block" });
         } else {
           hideEl(el);
         }
-        btn.classList.add("ruozhi-bl-done");
-        btn.innerHTML = "✅ 已拉黑";
+        btn.dataset.done = "1";
+        btn.textContent = "✅ 已拉黑";
+        Object.assign(btn.style, {
+          color: "#d9534f",
+          borderColor: "#f5c6cb",
+          background: "#fff0f0",
+          cursor: "default"
+        });
       } catch (err) {
         console.error(TAG, "❌ 手动拉黑失败:", err);
       }
     });
-    const parent = el.parentNode;
-    if (parent) {
-      parent.insertBefore(btn, el.nextSibling);
-    }
+    parent.insertBefore(btn, el.nextSibling);
   }
   function extractComment(el) {
     var _a;
