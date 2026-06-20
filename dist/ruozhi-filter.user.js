@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         信息茧房放大器 - B站降智评论过滤器
 // @namespace    ruozhi-filter
-// @version      0.2.0
+// @version      0.2.1
 // @author       ruozhi-filter
 // @description  AI驱动：自动识别并折叠B站评论区中的降智/引战言论
 // @license      MIT
@@ -1036,10 +1036,10 @@ ${ctxBlock}
           source: "manual"
         });
         console.log(TAG$1, `🚫 手动拉黑: ${info.uname}`);
-        if (config.foldMode) {
-          foldEl(el, info, { reason: "[手动拉黑]", severity: "block" });
-        } else {
+        if (config.foldMode === "none") {
           hideEl(el);
+        } else {
+          foldEl(el, info, { reason: "[手动拉黑]", severity: "block" }, config.foldMode);
         }
         btn.dataset.done = "1";
         btn.textContent = "✅ 已拉黑";

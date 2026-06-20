@@ -565,10 +565,10 @@ function injectManualBlacklistButton(el: Element, info: PendingComment): void {
 
       console.log(TAG, `🚫 手动拉黑: ${info.uname}`);
 
-      if (config.foldMode) {
-        foldEl(el, info, { reason: "[手动拉黑]", severity: "block" });
-      } else {
+      if (config.foldMode === "none") {
         hideEl(el);
+      } else {
+        foldEl(el, info, { reason: "[手动拉黑]", severity: "block" }, config.foldMode);
       }
 
       btn.dataset.done = "1";
