@@ -24,6 +24,24 @@ let batchTimer: ReturnType<typeof setTimeout> | null = null;
 const scannedRpids = new Set<number>();
 let isFlushing = false;
 
+// ── 本地预过滤：跳过明显无需 AI 判断的低价值评论 ──
+
+/** 预过滤：返回true表示跳过（不需要AI判定） */
+function skipAI(info: PendingComment): boolean {
+  const msg = info.message.trim();
+  // 过短（<3个非空白字符），如 "哈" "嗯" "dd"
+  if ([...msg].filter((c) => c !== " ").length < 3) return true;
+  // 纯符号/表情/数字/标点（如 "666"、"2333"、"？？？"、"😂"）
+  if (
+    /^[\s\d\p{P}\p{S}\p{Emoji}，,。.！!？?…~～、]+$/u.test(msg) &&
+    msg.length < 15
+  )
+    return true;
+  // 纯英文简单评论（如 "good"、"nice"、"nb"）
+  if (/^[a-zA-Z\s!~]+$/.test(msg) && msg.length < 8) return true;
+  return false;
+}
+
 // ── 扫描 ──
 
 function scanPage(): void {
@@ -107,12 +125,16 @@ function scanPage(): void {
     scannedRpids.add(info.rpid);
     found++;
     if (!config.enableAI && !config.enableBlacklist) return;
+
+    // 本地预过滤：跳过明显低价值评论，节省 AI token
+    if (config.enableAI && skipAI(info)) return;
+
     pendingBatch.push(info);
   });
 
   if (found > 0) {
-    // 缩短批量等待：凑够 10 条立刻发，否则最多等 150ms
-    if (pendingBatch.length >= 10) flushBatch();
+    // 凑够 15 条立刻发，减少 API 调用次数（System Prompt 重复发送是主要token开销）
+    if (pendingBatch.length >= 15) flushBatch();
     else if (!batchTimer) batchTimer = setTimeout(flushBatch, 150);
   }
 }
@@ -226,18 +248,14 @@ function watchNewComments(): void {
 
 /** 滚动加载检测 */
 function watchScrollLoading(): void {
-  // B站评论区滚动到底部时会加载更多评论
-  // 监听滚动事件，在滚动停止后触发扫描
   let scrollTimer: ReturnType<typeof setTimeout> | null = null;
-
   window.addEventListener(
     "scroll",
     () => {
       if (scrollTimer) clearTimeout(scrollTimer);
       scrollTimer = setTimeout(() => {
         scanPage();
-        // 如果还有待处理，立即刷
-        if (pendingBatch.length >= 10) flushBatch();
+        if (pendingBatch.length >= 15) flushBatch();
       }, 250);
     },
     { passive: true },
@@ -252,10 +270,10 @@ export function startDOMScanner(): void {
   setTimeout(() => scanPage(), 500);
   setTimeout(() => scanPage(), 1500);
 
-  // 周期性扫描 (每3秒，原来5s)
+  // 周期性扫描 (每3秒)
   setInterval(() => {
     scanPage();
-    if (pendingBatch.length >= 10) flushBatch();
+    if (pendingBatch.length >= 15) flushBatch();
   }, 3000);
 
   // 监听DOM变化（提前到 500ms，原来 2s）

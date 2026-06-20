@@ -106,7 +106,6 @@ export function foldEl(
         .querySelector(".ruozhi-unblock-btn")
         ?.addEventListener("click", async (e) => {
           e.stopPropagation();
-          if (!confirm("确定要取消拉黑吗？该用户的评论将恢复显示。")) return;
           try {
             await removeFromBlacklist(blRecord.mid);
             (el as HTMLElement).style.display = "";
@@ -127,7 +126,6 @@ export function foldEl(
         .querySelector(".ruozhi-misjudge-btn")
         ?.addEventListener("click", (e) => {
           e.stopPropagation();
-          if (!confirm("确定认为这是误判吗？评论将恢复显示。")) return;
           (el as HTMLElement).style.display = "";
           foldElDiv.remove();
           origElDiv.remove();

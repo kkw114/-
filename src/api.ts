@@ -13,43 +13,31 @@ import { log, warn } from "./debug";
 const TAG = "[ruozhi-filter]";
 
 function buildSystemPrompt(config: FilterConfig, ctx: ReplyContext): string {
-  let ctxBlock = `视频标题：${ctx.videoTitle}`;
+  const ctxParts: string[] = [`视频：${ctx.videoTitle}`];
   if (config.sendVideoDesc) {
-    ctxBlock += `
-视频简介：${ctx.videoDesc.slice(0, 300)}`;
+    ctxParts.push(`简介：${ctx.videoDesc.slice(0, 200)}`);
   }
 
-  return `你是一个评论净化判官。你的任务是严格根据用户的过滤规则，判断每条评论是否违规。
-
-## 判定标准
-用户过滤规则：${config.prompt}
-
-违规判定维度：
+  return `判断评论是否违规。
+规则：${config.prompt}
+维度：
 ${config.filterDimensions}
+上下文：${ctxParts.join("；")}
 
-## 上下文
-${ctxBlock}
-
-## 输出要求
-返回一个JSON对象，格式如下（不要包含任何markdown标记，只输出纯JSON）：
-{
-  "verdicts": [
-    { "rpid": 123, "mid": 456, "violation": true, "reason": "煽动性别对立", "severity": "high" }
-  ]
-}
-
-- severity 可选值: "none", "low", "medium", "high", "block"
-- 只返回违规的评论（violation=true），没有违规则返回空数组`;
+仅输出JSON（无markdown标记）：
+{"verdicts":[{"i":索引,"violation":true,"reason":"理由","severity":"low|medium|high|block"}]}
+只输出违规评论，无违规返回{"verdicts":[]}`;
 }
 
 function buildUserMessage(config: FilterConfig, replies: BiliReply[]): string {
-  const comments = replies.map((r) => {
+  // 紧凑格式：用数字索引代替 rpid字段名，减少 JSON key 开销
+  const comments = replies.map((r, i) => {
     const item: Record<string, unknown> = {
-      rpid: r.rpid,
-      content: r.content.message,
+      i, // 索引，AI 返回时用 i 对应，我们再映射回 rpid
+      c: r.content.message,
     };
-    if (config.sendMid) item.mid = r.mid;
-    if (config.sendUname) item.uname = r.member.uname;
+    if (config.sendMid) item.m = r.mid;
+    if (config.sendUname) item.u = r.member.uname;
     return item;
   });
   return JSON.stringify(comments);
@@ -79,6 +67,9 @@ export async function batchJudge(
     }),
   );
 
+  // 构建索引→rpid 映射表（因为 User Message 用紧凑格式 i 代替 rpid）
+  const rpidByIndex = new Map(replies.map((r, i) => [i, r.rpid]));
+
   const fetchStart = Date.now();
 
   // ★ 使用原生 fetch 的引用，避免被自己的拦截器干扰
@@ -102,8 +93,8 @@ export async function batchJudge(
           { role: "system", content: systemPrompt },
           { role: "user", content: userMessage },
         ],
-        temperature: 0.1,
-        max_tokens: 4096,
+        temperature: 0,
+        max_tokens: 2048,
         response_format: { type: "json_object" },
       }),
     });
@@ -132,7 +123,15 @@ export async function batchJudge(
       if (jsonStr.endsWith("```")) jsonStr = jsonStr.slice(0, -3);
       jsonStr = jsonStr.trim();
       const parsed = JSON.parse(jsonStr);
-      return { verdicts: parsed.verdicts ?? [], usage };
+      // 将紧凑格式的 i 映射回 rpid
+      const verdicts: AIVerdict[] = (parsed.verdicts ?? []).map((v: any) => ({
+        rpid: rpidByIndex.get(v.i) ?? v.rpid ?? 0,
+        mid: v.mid ?? 0,
+        violation: v.violation,
+        reason: v.reason ?? "",
+        severity: v.severity ?? "medium",
+      }));
+      return { verdicts, usage };
     } catch (e) {
       console.error(TAG, "❌ AI 返回解析失败:", e);
       return { verdicts: [], usage };

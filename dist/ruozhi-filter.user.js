@@ -49,41 +49,29 @@
   }
   const TAG$7 = "[ruozhi-filter]";
   function buildSystemPrompt(config, ctx) {
-    let ctxBlock = `视频标题：${ctx.videoTitle}`;
+    const ctxParts = [`视频：${ctx.videoTitle}`];
     if (config.sendVideoDesc) {
-      ctxBlock += `
-视频简介：${ctx.videoDesc.slice(0, 300)}`;
+      ctxParts.push(`简介：${ctx.videoDesc.slice(0, 200)}`);
     }
-    return `你是一个评论净化判官。你的任务是严格根据用户的过滤规则，判断每条评论是否违规。
-
-## 判定标准
-用户过滤规则：${config.prompt}
-
-违规判定维度：
+    return `判断评论是否违规。
+规则：${config.prompt}
+维度：
 ${config.filterDimensions}
+上下文：${ctxParts.join("；")}
 
-## 上下文
-${ctxBlock}
-
-## 输出要求
-返回一个JSON对象，格式如下（不要包含任何markdown标记，只输出纯JSON）：
-{
-  "verdicts": [
-    { "rpid": 123, "mid": 456, "violation": true, "reason": "煽动性别对立", "severity": "high" }
-  ]
-}
-
-- severity 可选值: "none", "low", "medium", "high", "block"
-- 只返回违规的评论（violation=true），没有违规则返回空数组`;
+仅输出JSON（无markdown标记）：
+{"verdicts":[{"i":索引,"violation":true,"reason":"理由","severity":"low|medium|high|block"}]}
+只输出违规评论，无违规返回{"verdicts":[]}`;
   }
   function buildUserMessage(config, replies) {
-    const comments = replies.map((r) => {
+    const comments = replies.map((r, i) => {
       const item = {
-        rpid: r.rpid,
-        content: r.content.message
+        i,
+        // 索引，AI 返回时用 i 对应，我们再映射回 rpid
+        c: r.content.message
       };
-      if (config.sendMid) item.mid = r.mid;
-      if (config.sendUname) item.uname = r.member.uname;
+      if (config.sendMid) item.m = r.mid;
+      if (config.sendUname) item.u = r.member.uname;
       return item;
     });
     return JSON.stringify(comments);
@@ -105,6 +93,7 @@ ${ctxBlock}
         response_format: { type: "json_object" }
       })
     );
+    const rpidByIndex = new Map(replies.map((r, i) => [i, r.rpid]));
     const fetchStart = Date.now();
     const fetcher = typeof unsafeWindow !== "undefined" ? unsafeWindow.fetch : window.fetch;
     try {
@@ -120,8 +109,8 @@ ${ctxBlock}
             { role: "system", content: systemPrompt },
             { role: "user", content: userMessage }
           ],
-          temperature: 0.1,
-          max_tokens: 4096,
+          temperature: 0,
+          max_tokens: 2048,
           response_format: { type: "json_object" }
         })
       });
@@ -145,7 +134,14 @@ ${ctxBlock}
         if (jsonStr.endsWith("```")) jsonStr = jsonStr.slice(0, -3);
         jsonStr = jsonStr.trim();
         const parsed = JSON.parse(jsonStr);
-        return { verdicts: parsed.verdicts ?? [], usage };
+        const verdicts = (parsed.verdicts ?? []).map((v) => ({
+          rpid: rpidByIndex.get(v.i) ?? v.rpid ?? 0,
+          mid: v.mid ?? 0,
+          violation: v.violation,
+          reason: v.reason ?? "",
+          severity: v.severity ?? "medium"
+        }));
+        return { verdicts, usage };
       } catch (e) {
         console.error(TAG$7, "❌ AI 返回解析失败:", e);
         return { verdicts: [], usage };
@@ -1277,7 +1273,6 @@ ${ctxBlock}
         );
         (_c = origElDiv.querySelector(".ruozhi-unblock-btn")) == null ? void 0 : _c.addEventListener("click", async (e) => {
           e.stopPropagation();
-          if (!confirm("确定要取消拉黑吗？该用户的评论将恢复显示。")) return;
           try {
             await removeFromBlacklist(blRecord.mid);
             el.style.display = "";
@@ -1296,7 +1291,6 @@ ${ctxBlock}
         );
         (_d = origElDiv.querySelector(".ruozhi-misjudge-btn")) == null ? void 0 : _d.addEventListener("click", (e) => {
           e.stopPropagation();
-          if (!confirm("确定认为这是误判吗？评论将恢复显示。")) return;
           el.style.display = "";
           foldElDiv.remove();
           origElDiv.remove();
@@ -1658,6 +1652,14 @@ ${ctxBlock}
   let batchTimer = null;
   const scannedRpids = /* @__PURE__ */ new Set();
   let isFlushing = false;
+  function skipAI(info) {
+    const msg = info.message.trim();
+    if ([...msg].filter((c) => c !== " ").length < 3) return true;
+    if (/^[\s\d\p{P}\p{S}\p{Emoji}，,。.！!？?…~～、]+$/u.test(msg) && msg.length < 15)
+      return true;
+    if (/^[a-zA-Z\s!~]+$/.test(msg) && msg.length < 8) return true;
+    return false;
+  }
   function scanPage() {
     const root = getCommentRoot();
     if (!root) {
@@ -1723,10 +1725,11 @@ ${ctxBlock}
       scannedRpids.add(info.rpid);
       found++;
       if (!config.enableAI && !config.enableBlacklist) return;
+      if (config.enableAI && skipAI(info)) return;
       pendingBatch.push(info);
     });
     if (found > 0) {
-      if (pendingBatch.length >= 10) flushBatch();
+      if (pendingBatch.length >= 15) flushBatch();
       else if (!batchTimer) batchTimer = setTimeout(flushBatch, 150);
     }
   }
@@ -1817,7 +1820,7 @@ ${ctxBlock}
         if (scrollTimer) clearTimeout(scrollTimer);
         scrollTimer = setTimeout(() => {
           scanPage();
-          if (pendingBatch.length >= 10) flushBatch();
+          if (pendingBatch.length >= 15) flushBatch();
         }, 250);
       },
       { passive: true }
@@ -1828,7 +1831,7 @@ ${ctxBlock}
     setTimeout(() => scanPage(), 1500);
     setInterval(() => {
       scanPage();
-      if (pendingBatch.length >= 10) flushBatch();
+      if (pendingBatch.length >= 15) flushBatch();
     }, 3e3);
     setTimeout(() => watchNewComments(), 500);
     watchScrollLoading();
