@@ -1029,14 +1029,39 @@ ${ctxBlock}
       check();
     });
   }
-  async function triggerReport(commentEl, reason) {
-    const reasonCopied = await copyToClipboard(reason);
-    if (reasonCopied) {
-      showToast("✅ 已复制 AI 判定理由，请粘贴到举报框 (Cmd+V)");
+  function deepFind(root, selector) {
+    const el = root.querySelector(selector);
+    if (el) return el;
+    for (const child of root.children) {
+      const c = child;
+      if (c.shadowRoot) {
+        const found = deepFind(c.shadowRoot, selector);
+        if (found) return found;
+      }
     }
+    return null;
+  }
+  async function triggerReport(commentEl, reason) {
+    var _a;
+    const reasonCopied = await copyToClipboard(reason);
+    if (reasonCopied) showToast("✅ 已复制 AI 判定理由，请粘贴到举报框 (Cmd+V)");
     const el = commentEl;
-    const renderer = el.closest("bili-comment-renderer") ?? el.closest("bili-comment-thread-renderer") ?? el;
-    console.log(TAG$5, "🔍 评论容器:", renderer.tagName.toLowerCase());
+    const rootNode = el.getRootNode();
+    let renderer;
+    if (rootNode instanceof ShadowRoot) {
+      renderer = rootNode.host;
+    } else {
+      renderer = el.closest("bili-comment-renderer") ?? el.closest("bili-comment-thread-renderer") ?? el;
+    }
+    console.log(
+      TAG$5,
+      "🔍 评论容器:",
+      renderer.tagName.toLowerCase(),
+      "| shadowRoot:",
+      !!renderer.shadowRoot,
+      "| children:",
+      ((_a = renderer.shadowRoot) == null ? void 0 : _a.children.length) ?? 0
+    );
     const prevDisplay = renderer.style.display;
     renderer.style.display = "";
     await new Promise((r) => requestAnimationFrame(r));
@@ -1044,12 +1069,17 @@ ${ctxBlock}
     try {
       const sr = renderer.shadowRoot;
       if (!sr) {
-        console.warn(TAG$5, "⚠️ 评论容器无 shadowRoot:", renderer.tagName);
+        console.warn(TAG$5, "⚠️ 容器无 shadowRoot:", renderer.tagName);
         return { opened: false, reasonCopied };
       }
-      const actionBar = sr.querySelector("bili-comment-action-buttons-renderer");
+      const actionBar = deepFind(sr, "bili-comment-action-buttons-renderer");
       if (!actionBar || !actionBar.shadowRoot) {
         console.warn(TAG$5, "⚠️ 未找到 action-buttons");
+        console.log(
+          TAG$5,
+          "  shadowRoot 子元素:",
+          [...sr.children].map((c) => c.tagName.toLowerCase())
+        );
         return { opened: false, reasonCopied };
       }
       const actionSR = actionBar.shadowRoot;
@@ -1102,16 +1132,12 @@ ${ctxBlock}
       attempts++;
       const popup = document.querySelector("bili-comments-popup");
       if (!popup) {
-        if (Date.now() - start < MAX_WAIT) {
-          setTimeout(tryFill, 200);
-        }
+        if (Date.now() - start < MAX_WAIT) setTimeout(tryFill, 200);
         return;
       }
       const form = popup.querySelector("bili-comment-report-form");
       if (!form || !form.shadowRoot) {
-        if (Date.now() - start < MAX_WAIT) {
-          setTimeout(tryFill, 200);
-        }
+        if (Date.now() - start < MAX_WAIT) setTimeout(tryFill, 200);
         return;
       }
       const formSR = form.shadowRoot;
@@ -1153,9 +1179,7 @@ ${ctxBlock}
         console.log(TAG$5, "✅ 已自动填写举报理由");
         return;
       }
-      if (Date.now() - start < MAX_WAIT) {
-        setTimeout(tryFill, 300);
-      }
+      if (Date.now() - start < MAX_WAIT) setTimeout(tryFill, 300);
     };
     setTimeout(tryFill, 600);
   }

@@ -45,7 +45,7 @@ function findByText(root: ParentNode, text: string): Element | null {
   );
 }
 
-/** 显示轻量 toast */
+/** 显示 toast */
 function showToast(msg: string, duration = 2500): void {
   const toast = document.createElement("div");
   toast.textContent = msg;
@@ -84,34 +84,59 @@ function waitFor(checker: () => boolean, timeoutMs: number): Promise<boolean> {
 }
 
 /**
+ * 在 ShadowRoot 内递归查找选择器
+ * （querySelector 不穿透嵌套 shadowRoot，需要用这个）
+ */
+function deepFind(root: ParentNode, selector: string): Element | null {
+  const el = root.querySelector(selector);
+  if (el) return el;
+  for (const child of root.children) {
+    const c = child as Element;
+    if (c.shadowRoot) {
+      const found = deepFind(c.shadowRoot, selector);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+/**
  * 触发原生举报流程
- *
- * 关键: foldEl 将原评论元素设为 display:none，此时 shadow DOM 内
- * .click() 不会触发浏览器 UI。必须临时恢复 display 等待重排。
  */
 export async function triggerReport(
   commentEl: Element,
   reason: string,
 ): Promise<{ opened: boolean; reasonCopied: boolean }> {
   const reasonCopied = await copyToClipboard(reason);
-  if (reasonCopied) {
-    showToast("✅ 已复制 AI 判定理由，请粘贴到举报框 (Cmd+V)");
+  if (reasonCopied) showToast("✅ 已复制 AI 判定理由，请粘贴到举报框 (Cmd+V)");
+
+  const el = commentEl as HTMLElement;
+
+  // ★ 核心修复: closest() 不穿透 Shadow DOM 边界。
+  //    el 如果在 bili-comment-renderer 的 shadowRoot 内部，
+  //    需要用 getRootNode().host 取宿主元素。
+  const rootNode = el.getRootNode();
+  let renderer: HTMLElement;
+  if (rootNode instanceof ShadowRoot) {
+    renderer = rootNode.host as HTMLElement;
+  } else {
+    renderer =
+      (el.closest("bili-comment-renderer") as HTMLElement) ??
+      (el.closest("bili-comment-thread-renderer") as HTMLElement) ??
+      el;
   }
 
-  // ★ 向上查找真正的评论容器
-  //    findCommentElements 可能返回 [data-rpid] 内层元素或
-  //    bili-comment-thread-renderer，bili-comment-renderer 才是
-  //    拥有 shadowRoot + action-buttons 的容器
-  const el = commentEl as HTMLElement;
-  const renderer =
-    (el.closest("bili-comment-renderer") as HTMLElement | null) ??
-    (el.closest("bili-comment-thread-renderer") as HTMLElement | null) ??
-    el;
-  console.log(TAG, "🔍 评论容器:", renderer.tagName.toLowerCase());
+  console.log(
+    TAG,
+    "🔍 评论容器:",
+    renderer.tagName.toLowerCase(),
+    "| shadowRoot:",
+    !!renderer.shadowRoot,
+    "| children:",
+    renderer.shadowRoot?.children.length ?? 0,
+  );
 
   const prevDisplay = renderer.style.display;
-
-  // ★ 恢复可见 + 等浏览器重排
   renderer.style.display = "";
   await new Promise((r) => requestAnimationFrame(r));
   await new Promise((r) => requestAnimationFrame(r));
@@ -119,16 +144,22 @@ export async function triggerReport(
   try {
     const sr = renderer.shadowRoot;
     if (!sr) {
-      console.warn(TAG, "⚠️ 评论容器无 shadowRoot:", renderer.tagName);
+      console.warn(TAG, "⚠️ 容器无 shadowRoot:", renderer.tagName);
       return { opened: false, reasonCopied };
     }
 
-    // ── 找到 "更多" → 点击 ──
-    const actionBar = sr.querySelector("bili-comment-action-buttons-renderer");
+    // 用 deepFind 穿透可能嵌套的 shadowRoot
+    const actionBar = deepFind(sr, "bili-comment-action-buttons-renderer");
     if (!actionBar || !(actionBar as HTMLElement).shadowRoot) {
       console.warn(TAG, "⚠️ 未找到 action-buttons");
+      console.log(
+        TAG,
+        "  shadowRoot 子元素:",
+        [...sr.children].map((c) => (c as HTMLElement).tagName.toLowerCase()),
+      );
       return { opened: false, reasonCopied };
     }
+
     const actionSR = (actionBar as HTMLElement).shadowRoot!;
     const moreBtn = actionSR.querySelector(
       "#more button",
@@ -141,7 +172,6 @@ export async function triggerReport(
     console.log(TAG, "🔍 点击「更多」...");
     moreBtn.click();
 
-    // ── 等待菜单出现（B站通过 inline style CSS 变量控制）──
     const menuAppeared = await waitFor(() => {
       const m = actionSR.querySelector(
         "bili-comment-menu",
@@ -157,7 +187,6 @@ export async function triggerReport(
       return { opened: false, reasonCopied };
     }
 
-    // ── 点击「举报」──
     const menuEl = actionSR.querySelector("bili-comment-menu") as HTMLElement;
     const reportLi = findByText(
       menuEl.shadowRoot!,
@@ -167,10 +196,9 @@ export async function triggerReport(
       console.warn(TAG, "⚠️ 菜单中未找到「举报」");
       return { opened: false, reasonCopied };
     }
+
     console.log(TAG, "🔍 点击「举报」...");
     reportLi.click();
-
-    // ── 等待举报弹窗渲染，填入理由 ──
     waitAndFillReportForm(reason);
 
     console.log(TAG, "✅ 已触发原生举报");
@@ -180,46 +208,27 @@ export async function triggerReport(
   }
 }
 
-/**
- * 轮询等待 <bili-comments-popup> 弹窗出现，
- * 选中「引战、不友善言论」radio，自动填入 AI 理由。
- *
- * DOM 路径：
- *   document → bili-comments-popup (light DOM)
- *     → children: bili-comment-report-form (light DOM)
- *       → shadowRoot → #form → #main → #options → #option
- *         → textarea[data-key="4"]   (引战、不友善言论)
- */
 function waitAndFillReportForm(reason: string): void {
   const start = Date.now();
   const MAX_WAIT = 4000;
-  const TRIES = 30;
   let attempts = 0;
 
   const tryFill = () => {
     attempts++;
-
-    // 1) 找到弹窗
     const popup = document.querySelector("bili-comments-popup");
     if (!popup) {
-      if (Date.now() - start < MAX_WAIT) {
-        setTimeout(tryFill, 200);
-      }
+      if (Date.now() - start < MAX_WAIT) setTimeout(tryFill, 200);
       return;
     }
 
-    // 2) 在弹窗的 light DOM 中找到 report form
     const form = popup.querySelector("bili-comment-report-form");
     if (!form || !(form as HTMLElement).shadowRoot) {
-      if (Date.now() - start < MAX_WAIT) {
-        setTimeout(tryFill, 200);
-      }
+      if (Date.now() - start < MAX_WAIT) setTimeout(tryFill, 200);
       return;
     }
 
     const formSR = (form as HTMLElement).shadowRoot!;
 
-    // 3) 先点击「引战、不友善言论」radio (value=4)
     if (attempts <= 2) {
       const allOptions = formSR.querySelectorAll("#option");
       for (const opt of allOptions) {
@@ -249,7 +258,6 @@ function waitAndFillReportForm(reason: string): void {
       return;
     }
 
-    // 4) 找到 textarea 并填入理由
     const textarea = formSR.querySelector(
       "textarea[maxlength='200']",
     ) as HTMLTextAreaElement | null;
@@ -261,15 +269,12 @@ function waitAndFillReportForm(reason: string): void {
       return;
     }
 
-    if (Date.now() - start < MAX_WAIT) {
-      setTimeout(tryFill, 300);
-    }
+    if (Date.now() - start < MAX_WAIT) setTimeout(tryFill, 300);
   };
 
   setTimeout(tryFill, 600);
 }
 
-/** 仅复制理由到剪贴板 */
 export async function copyReason(reason: string): Promise<boolean> {
   const ok = await copyToClipboard(reason);
   if (ok) showToast("✅ 已复制 AI 判定理由，请粘贴到举报框 (Cmd+V)");
