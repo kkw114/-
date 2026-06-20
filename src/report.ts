@@ -4,20 +4,12 @@
 
 const TAG = "[ruozhi-filter]";
 
-/**
- * AI 严重度 → B站举报类别映射
- * B站举报 radio value:
- *   2=色情低俗  4=引战不友善  15=隐私  17=未成年  23=广告  9=涉政  22=谣言  8=刷屏  0=其他
- */
-const CATEGORY_VALUE = 4; // 默认「引战、不友善言论」
-
 /** 复制文本到剪贴板 */
 async function copyToClipboard(text: string): Promise<boolean> {
   try {
     await navigator.clipboard.writeText(text);
     return true;
   } catch {
-    // 降级: textarea fallback
     const ta = document.createElement("textarea");
     ta.value = text;
     ta.style.position = "fixed";
@@ -30,17 +22,13 @@ async function copyToClipboard(text: string): Promise<boolean> {
   }
 }
 
-/** 查找包含指定文本的元素（在 shadow DOM 中递归） */
-function findElementByText(
-  root: Document | ShadowRoot | Element,
-  text: string,
-): Element | null {
+/** 查找包含指定文本的元素（shadow DOM 递归） */
+function findElementByText(root: ParentNode, text: string): Element | null {
   const walk = (node: ParentNode): Element | null => {
     for (const child of node.children) {
       const el = child as HTMLElement;
-      if (el.innerText?.trim() === text || el.textContent?.trim() === text) {
-        return el;
-      }
+      const t = el.innerText?.trim() || el.textContent?.trim() || "";
+      if (t === text) return el;
       if ((el as Element).shadowRoot) {
         const found = walk((el as Element).shadowRoot!);
         if (found) return found;
@@ -53,9 +41,7 @@ function findElementByText(
     return null;
   };
   return walk(
-    root instanceof Element
-      ? (((root as Element).shadowRoot ?? root) as ParentNode)
-      : root,
+    root instanceof Element ? ((root as Element).shadowRoot ?? root) : root,
   );
 }
 
@@ -85,7 +71,7 @@ function showToast(msg: string, duration = 2500): void {
   }, duration);
 }
 
-/** 等待条件满足 */
+/** 等待条件满足（用 requestAnimationFrame 轮询） */
 function waitFor(checker: () => boolean, timeoutMs: number): Promise<boolean> {
   return new Promise((resolve) => {
     const start = Date.now();
@@ -100,44 +86,44 @@ function waitFor(checker: () => boolean, timeoutMs: number): Promise<boolean> {
 
 /**
  * 触发原生举报流程
- * 1. 复制 AI 判定理由到剪贴板
- * 2. 临时恢复评论元素可见性（否则 shadow DOM 内 click 不触发 UI）
- * 3. 穿透嵌套 Shadow DOM 找到「举报」菜单项并点击
- * 4. B站举报弹窗弹出后，尝试自动填写理由
+ *
+ * 关键: foldEl 将原评论元素设为 display:none，此时 shadow DOM 内
+ * .click() 不会触发浏览器 UI。必须临时恢复 display，等浏览器重排后再操作。
  */
 export async function triggerReport(
   commentEl: Element,
   reason: string,
 ): Promise<{ opened: boolean; reasonCopied: boolean }> {
-  // Step 1: 复制理由
+  // Step 0: 复制理由
   const reasonCopied = await copyToClipboard(reason);
   if (reasonCopied) {
     showToast("✅ 已复制 AI 判定理由，请粘贴到举报框 (Cmd+V)");
   }
 
-  // Step 2: 临时恢复元素可见 — foldEl 给原始评论设了 display:none，
-  //         在此状态下 shadow DOM 内的 click() 不会触发浏览器 UI 弹窗
   const el = commentEl as HTMLElement;
   const prevDisplay = el.style.display;
+
+  // ★ 恢复可见 + 等待浏览器重排
   el.style.display = "";
+  await new Promise((r) => requestAnimationFrame(r));
+  // 再等一帧确保样式已经计算完毕
+  await new Promise((r) => requestAnimationFrame(r));
 
   try {
     const sr = el.shadowRoot;
     if (!sr) {
-      console.warn(TAG, "⚠️ 评论元素无 shadowRoot，无法触发举报");
+      console.warn(TAG, "⚠️ 评论元素无 shadowRoot");
       return { opened: false, reasonCopied };
     }
 
-    // 找到 action-buttons → shadowRoot → #more → button
-    const actionButtons = sr.querySelector(
-      "bili-comment-action-buttons-renderer",
-    );
-    if (!actionButtons || !(actionButtons as HTMLElement).shadowRoot) {
+    // ── 找到 "更多" 按钮 ──
+    const actionBar = sr.querySelector("bili-comment-action-buttons-renderer");
+    if (!actionBar || !(actionBar as HTMLElement).shadowRoot) {
       console.warn(TAG, "⚠️ 未找到 action-buttons");
       return { opened: false, reasonCopied };
     }
 
-    const actionSR = (actionButtons as HTMLElement).shadowRoot!;
+    const actionSR = (actionBar as HTMLElement).shadowRoot!;
     const moreBtn = actionSR.querySelector(
       "#more button",
     ) as HTMLElement | null;
@@ -146,26 +132,32 @@ export async function triggerReport(
       return { opened: false, reasonCopied };
     }
 
-    // 点击「更多」
+    console.log(TAG, "🔍 点击「更多」按钮...");
     moreBtn.click();
 
-    // 等待菜单变为可见（bili-comment-menu 始终在 DOM 中，点击后显示）
-    const menuVisible = await waitFor(() => {
+    // ── 等待菜单出现 ──
+    // B站菜单通过 inline style 的 CSS 变量切换:
+    //   隐藏: style=""
+    //   显示: style="--bili-comment-menu-display:block;"
+    const menuAppeared = await waitFor(() => {
       const m = actionSR.querySelector(
         "bili-comment-menu",
       ) as HTMLElement | null;
       if (!m || !m.shadowRoot) return false;
-      // 检查是否可见
-      const style = getComputedStyle(m);
-      return style.display !== "none" && style.visibility !== "hidden";
+      const style = m.getAttribute("style") || "";
+      return style.includes("--bili-comment-menu-display:block");
     }, 2000);
 
-    if (!menuVisible) {
-      console.warn(TAG, "⚠️ 菜单未显示");
+    if (!menuAppeared) {
+      console.warn(
+        TAG,
+        "⚠️ 菜单未显示（未检测到 --bili-comment-menu-display:block）",
+      );
       return { opened: false, reasonCopied };
     }
 
-    // 在菜单 shadowRoot 中找到「举报」并点击
+    console.log(TAG, "✅ 菜单已显示，查找「举报」...");
+
     const menuEl = actionSR.querySelector("bili-comment-menu") as HTMLElement;
     const menuSR = menuEl.shadowRoot!;
     const reportLi = findElementByText(menuSR, "举报") as HTMLElement | null;
@@ -174,20 +166,21 @@ export async function triggerReport(
       return { opened: false, reasonCopied };
     }
 
+    console.log(TAG, "🔍 点击「举报」...");
     reportLi.click();
 
-    // Step 3: 等待举报表单出现，尝试填写理由
+    // ── 等举报弹窗，填入理由 ──
     waitAndFillReportForm(reason);
 
-    console.log(TAG, "✅ 已触发原生举报弹窗");
+    console.log(TAG, "✅ 已触发原生举报");
     return { opened: true, reasonCopied };
   } finally {
-    // 恢复原始显示状态
+    // 恢复折叠状态
     el.style.display = prevDisplay;
   }
 }
 
-/** 等待举报表单出现并自动填写理由 */
+/** 轮询等待举报表单出现，自动填入 AI 理由 */
 function waitAndFillReportForm(reason: string): void {
   const start = Date.now();
   const MAX_WAIT = 3000;
@@ -212,10 +205,10 @@ function waitAndFillReportForm(reason: string): void {
     }
   };
 
-  setTimeout(tryFill, 400);
+  setTimeout(tryFill, 500);
 }
 
-/** 仅复制理由到剪贴板 */
+/** 仅复制理由到剪贴板（不触发举报） */
 export async function copyReason(reason: string): Promise<boolean> {
   const ok = await copyToClipboard(reason);
   if (ok) showToast("✅ 已复制 AI 判定理由，请粘贴到举报框 (Cmd+V)");

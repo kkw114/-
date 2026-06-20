@@ -977,9 +977,8 @@ ${ctxBlock}
       var _a, _b;
       for (const child of node.children) {
         const el = child;
-        if (((_a = el.innerText) == null ? void 0 : _a.trim()) === text || ((_b = el.textContent) == null ? void 0 : _b.trim()) === text) {
-          return el;
-        }
+        const t = ((_a = el.innerText) == null ? void 0 : _a.trim()) || ((_b = el.textContent) == null ? void 0 : _b.trim()) || "";
+        if (t === text) return el;
         if (el.shadowRoot) {
           const found = walk(el.shadowRoot);
           if (found) return found;
@@ -1038,20 +1037,20 @@ ${ctxBlock}
     const el = commentEl;
     const prevDisplay = el.style.display;
     el.style.display = "";
+    await new Promise((r) => requestAnimationFrame(r));
+    await new Promise((r) => requestAnimationFrame(r));
     try {
       const sr = el.shadowRoot;
       if (!sr) {
-        console.warn(TAG$5, "⚠️ 评论元素无 shadowRoot，无法触发举报");
+        console.warn(TAG$5, "⚠️ 评论元素无 shadowRoot");
         return { opened: false, reasonCopied };
       }
-      const actionButtons = sr.querySelector(
-        "bili-comment-action-buttons-renderer"
-      );
-      if (!actionButtons || !actionButtons.shadowRoot) {
+      const actionBar = sr.querySelector("bili-comment-action-buttons-renderer");
+      if (!actionBar || !actionBar.shadowRoot) {
         console.warn(TAG$5, "⚠️ 未找到 action-buttons");
         return { opened: false, reasonCopied };
       }
-      const actionSR = actionButtons.shadowRoot;
+      const actionSR = actionBar.shadowRoot;
       const moreBtn = actionSR.querySelector(
         "#more button"
       );
@@ -1059,19 +1058,24 @@ ${ctxBlock}
         console.warn(TAG$5, "⚠️ 未找到「更多」按钮");
         return { opened: false, reasonCopied };
       }
+      console.log(TAG$5, "🔍 点击「更多」按钮...");
       moreBtn.click();
-      const menuVisible = await waitFor(() => {
+      const menuAppeared = await waitFor(() => {
         const m = actionSR.querySelector(
           "bili-comment-menu"
         );
         if (!m || !m.shadowRoot) return false;
-        const style = getComputedStyle(m);
-        return style.display !== "none" && style.visibility !== "hidden";
+        const style = m.getAttribute("style") || "";
+        return style.includes("--bili-comment-menu-display:block");
       }, 2e3);
-      if (!menuVisible) {
-        console.warn(TAG$5, "⚠️ 菜单未显示");
+      if (!menuAppeared) {
+        console.warn(
+          TAG$5,
+          "⚠️ 菜单未显示（未检测到 --bili-comment-menu-display:block）"
+        );
         return { opened: false, reasonCopied };
       }
+      console.log(TAG$5, "✅ 菜单已显示，查找「举报」...");
       const menuEl = actionSR.querySelector("bili-comment-menu");
       const menuSR = menuEl.shadowRoot;
       const reportLi = findElementByText(menuSR, "举报");
@@ -1079,9 +1083,10 @@ ${ctxBlock}
         console.warn(TAG$5, "⚠️ 菜单中未找到「举报」");
         return { opened: false, reasonCopied };
       }
+      console.log(TAG$5, "🔍 点击「举报」...");
       reportLi.click();
       waitAndFillReportForm(reason);
-      console.log(TAG$5, "✅ 已触发原生举报弹窗");
+      console.log(TAG$5, "✅ 已触发原生举报");
       return { opened: true, reasonCopied };
     } finally {
       el.style.display = prevDisplay;
@@ -1107,7 +1112,7 @@ ${ctxBlock}
         setTimeout(tryFill, 300);
       }
     };
-    setTimeout(tryFill, 400);
+    setTimeout(tryFill, 500);
   }
   async function copyReason(reason) {
     const ok = await copyToClipboard(reason);
