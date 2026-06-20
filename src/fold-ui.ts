@@ -44,9 +44,6 @@ export function foldEl(
 </div>`
       : "";
 
-    const misjudgeBtnHTML =
-      '<button class="ruozhi-misjudge-btn" style="padding:3px 10px;font-size:12px;border:1px solid #17a2b8;border-radius:4px;background:#fff;color:#17a2b8;cursor:pointer">✅ 误判，展开</button>';
-
     const html = (() => {
       switch (style) {
         case "classic":
@@ -54,20 +51,20 @@ export function foldEl(
 <span style="margin-right:8px">${label}</span><span style="font-weight:600">${esc(info.uname)}</span><span style="margin:0 8px;color:#ccc">|</span><span style="font-size:12px;color:#aaa">${esc(verdict.reason)}</span><span class="ruozhi-fold-arrow" data-collapsed="▼ 展开" data-expanded="▲ 收起" style="float:right;font-size:11px;color:#999">▼ 展开</span>
 </div><div class="ruozhi-original" style="display:none;padding:8px 12px;background:#f8f9fa;border-left:3px solid #ffc107;margin:4px 0;border-radius:0 6px 6px 0;font-size:13px">
 <div style="margin-bottom:6px;font-size:12px;color:#999">🧠 AI判定: <strong>${esc(verdict.reason)}</strong></div>
-<div style="color:#333;white-space:pre-wrap;word-break:break-word">${esc(info.message)}</div>${reportBtnsHTML}<div style="margin-top:8px">${misjudgeBtnHTML}</div></div>`;
+<div style="color:#333;white-space:pre-wrap;word-break:break-word">${esc(info.message)}</div>${reportBtnsHTML}</div>`;
         case "dim":
           return `<div class="ruozhi-folded" style="padding:1px 8px;margin:1px 0;font-size:9px;color:#ddd;cursor:pointer;user-select:none;font-family:system-ui,sans-serif;line-height:1.2;transition:color .15s,background .15s;border-radius:4px"
   onmouseenter="this.style.color='#bbb';this.style.background='#fafafa'" onmouseleave="this.style.color='#ddd';this.style.background='transparent'">
 <span style="opacity:0.6">···</span>
 </div><div class="ruozhi-original" style="display:none;padding:4px 8px;margin:0 0 2px 0;font-size:11px;color:#bbb;background:#fafafa;border-left:2px solid #eee;border-radius:0 4px 4px 0">
 <div style="margin-bottom:2px;font-size:10px;color:#ccc">${esc(verdict.reason)}</div>
-<div style="color:#bbb;white-space:pre-wrap;word-break:break-word">${esc(info.message)}</div>${reportBtnsHTML}<div style="margin-top:4px">${misjudgeBtnHTML}</div></div>`;
+<div style="color:#bbb;white-space:pre-wrap;word-break:break-word">${esc(info.message)}</div>${reportBtnsHTML}</div>`;
         default: // light
           return `<div class="ruozhi-folded" style="background:#fafafa;border-left:3px solid ${accent};padding:6px 12px;margin:4px 0;font-size:12px;color:#aaa;cursor:pointer;user-select:none;font-family:system-ui,sans-serif">
 <span style="margin-right:6px">${label}</span><span style="color:#999">${esc(info.uname)}</span><span class="ruozhi-fold-arrow" data-collapsed="▾" data-expanded="▴" style="float:right;font-size:10px;color:#ccc">▾</span>
 </div><div class="ruozhi-original" style="display:none;padding:6px 12px;background:#fafafa;border-left:3px solid #ddd;margin:0 0 4px 0;font-size:12px;color:#999">
 <div style="margin-bottom:4px;font-size:11px;color:#bbb">AI判定: ${esc(verdict.reason)}</div>
-<div style="color:#bbb;white-space:pre-wrap;word-break:break-word">${esc(info.message)}</div>${reportBtnsHTML}<div style="margin-top:6px">${misjudgeBtnHTML}</div></div>`;
+<div style="color:#bbb;white-space:pre-wrap;word-break:break-word">${esc(info.message)}</div>${reportBtnsHTML}</div>`;
       }
     })();
 
@@ -93,18 +90,46 @@ export function foldEl(
       }
     });
 
-    // ── 误判按钮绑定（展开区）──
-    const doMisjudge = (e: Event) => {
-      e.stopPropagation();
-      if (!confirm("确定认为这是误判吗？评论将恢复显示。")) return;
-      (el as HTMLElement).style.display = "";
-      foldElDiv.remove();
-      origElDiv.remove();
-    };
-
-    origElDiv
-      .querySelector(".ruozhi-misjudge-btn")
-      ?.addEventListener("click", doMisjudge);
+    // ── 恢复按钮：黑名单→取消拉黑；AI误判→误判展开（互斥）──
+    const blRecord = isBlacklistedSync(info.mid, info.uname);
+    if (blRecord) {
+      origElDiv.insertAdjacentHTML(
+        "beforeend",
+        `<div style="margin-top:8px;display:flex;gap:8px">
+  <button class="ruozhi-unblock-btn" style="padding:3px 10px;font-size:12px;border:1px solid #28a745;border-radius:4px;background:#fff;color:#28a745;cursor:pointer">↩️ 取消拉黑</button>
+</div>`,
+      );
+      origElDiv
+        .querySelector(".ruozhi-unblock-btn")
+        ?.addEventListener("click", async (e) => {
+          e.stopPropagation();
+          if (!confirm("确定要取消拉黑吗？该用户的评论将恢复显示。")) return;
+          try {
+            await removeFromBlacklist(blRecord.mid);
+            (el as HTMLElement).style.display = "";
+            foldElDiv.remove();
+            origElDiv.remove();
+          } catch (err) {
+            console.error(TAG, "❌ 取消拉黑失败:", err);
+          }
+        });
+    } else {
+      origElDiv.insertAdjacentHTML(
+        "beforeend",
+        `<div style="margin-top:8px;display:flex;gap:8px">
+  <button class="ruozhi-misjudge-btn" style="padding:3px 10px;font-size:12px;border:1px solid #17a2b8;border-radius:4px;background:#fff;color:#17a2b8;cursor:pointer">✅ 误判，展开</button>
+</div>`,
+      );
+      origElDiv
+        .querySelector(".ruozhi-misjudge-btn")
+        ?.addEventListener("click", (e) => {
+          e.stopPropagation();
+          if (!confirm("确定认为这是误判吗？评论将恢复显示。")) return;
+          (el as HTMLElement).style.display = "";
+          foldElDiv.remove();
+          origElDiv.remove();
+        });
+    }
 
     // ── 举报按钮绑定（展开区）──
     if (showReportBtn) {
@@ -120,41 +145,6 @@ export function foldEl(
         ?.addEventListener("click", (e) => {
           e.stopPropagation();
           triggerReport(el, verdict.reason);
-        });
-    }
-
-    // ── 取消拉黑按钮（展开区，仅黑名单中的评论显示）──
-    const blRecord = isBlacklistedSync(info.mid, info.uname);
-    if (blRecord) {
-      const unblockBtnHTML =
-        '<button class="ruozhi-unblock-btn" style="padding:3px 10px;font-size:12px;border:1px solid #28a745;border-radius:4px;background:#fff;color:#28a745;cursor:pointer">↩️ 取消拉黑</button>';
-
-      // 展开区：在按钮区追加
-      const btnRow = origElDiv.querySelector(
-        ".ruozhi-copy-reason",
-      )?.parentElement;
-      if (btnRow) {
-        btnRow.insertAdjacentHTML("beforeend", unblockBtnHTML);
-      } else {
-        origElDiv.insertAdjacentHTML(
-          "beforeend",
-          `<div style="margin-top:8px;display:flex;gap:8px">${unblockBtnHTML}</div>`,
-        );
-      }
-
-      origElDiv
-        .querySelector(".ruozhi-unblock-btn")
-        ?.addEventListener("click", async (e) => {
-          e.stopPropagation();
-          if (!confirm("确定要取消拉黑吗？该用户的评论将恢复显示。")) return;
-          try {
-            await removeFromBlacklist(blRecord.mid);
-            (el as HTMLElement).style.display = "";
-            foldElDiv.remove();
-            origElDiv.remove();
-          } catch (err) {
-            console.error(TAG, "❌ 取消拉黑失败:", err);
-          }
         });
     }
 
