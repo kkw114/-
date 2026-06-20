@@ -35,7 +35,7 @@
 - **降智煽动**：以偏概全、简化认知、传播刻板印象的明显反智言论
 - **仇恨言论**：涉及种族、地域、性别、性取向等的歧视性言论`
   };
-  const TAG$5 = "[ruozhi-filter]";
+  const TAG$6 = "[ruozhi-filter]";
   function buildSystemPrompt(config, ctx) {
     let ctxBlock = `视频标题：${ctx.videoTitle}`;
     if (config.sendVideoDesc) {
@@ -82,7 +82,7 @@ ${ctxBlock}
     const systemPrompt = buildSystemPrompt(config, ctx);
     const userMessage = buildUserMessage(config, replies);
     console.log(
-      TAG$5,
+      TAG$6,
       "📤 请求体:",
       JSON.stringify({
         model: config.model,
@@ -114,19 +114,19 @@ ${ctxBlock}
         })
       });
       console.log(
-        TAG$5,
+        TAG$6,
         `📡 API HTTP ${response.status}, ${Date.now() - fetchStart}ms`
       );
       if (!response.ok) {
         const errText = await response.text();
-        console.error(TAG$5, `❌ API ${response.status}:`, errText.slice(0, 200));
+        console.error(TAG$6, `❌ API ${response.status}:`, errText.slice(0, 200));
         throw new Error(`DeepSeek API error ${response.status}`);
       }
       const data = await response.json();
       const content = (_c = (_b = (_a = data.choices) == null ? void 0 : _a[0]) == null ? void 0 : _b.message) == null ? void 0 : _c.content;
       const usage = data.usage;
       if (!content) {
-        console.warn(TAG$5, "⚠️ AI 返回空内容");
+        console.warn(TAG$6, "⚠️ AI 返回空内容");
         return { verdicts: [], usage };
       }
       try {
@@ -138,11 +138,11 @@ ${ctxBlock}
         const parsed = JSON.parse(jsonStr);
         return { verdicts: parsed.verdicts ?? [], usage };
       } catch (e) {
-        console.error(TAG$5, "❌ AI 返回解析失败:", e);
+        console.error(TAG$6, "❌ AI 返回解析失败:", e);
         return { verdicts: [], usage };
       }
     } catch (err) {
-      console.error(TAG$5, "❌ 网络请求失败:", err);
+      console.error(TAG$6, "❌ 网络请求失败:", err);
       throw err;
     }
   }
@@ -955,6 +955,152 @@ ${ctxBlock}
       return null;
     }
   }
+  const TAG$5 = "[ruozhi-filter]";
+  async function copyToClipboard(text) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.left = "-9999px";
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand("copy");
+      document.body.removeChild(ta);
+      return ok;
+    }
+  }
+  function findElementByText(root, text) {
+    const walk = (node) => {
+      var _a, _b;
+      for (const child of node.children) {
+        const el = child;
+        if (((_a = el.innerText) == null ? void 0 : _a.trim()) === text || ((_b = el.textContent) == null ? void 0 : _b.trim()) === text) {
+          return el;
+        }
+        if (el.shadowRoot) {
+          const found = walk(el.shadowRoot);
+          if (found) return found;
+        }
+        if (el.children.length > 0) {
+          const found = walk(el);
+          if (found) return found;
+        }
+      }
+      return null;
+    };
+    return walk(
+      root instanceof Element ? root.shadowRoot ?? root : root
+    );
+  }
+  function showToast(msg, duration = 2500) {
+    const toast = document.createElement("div");
+    toast.textContent = msg;
+    Object.assign(toast.style, {
+      position: "fixed",
+      bottom: "60px",
+      left: "50%",
+      transform: "translateX(-50%)",
+      background: "rgba(0,0,0,0.82)",
+      color: "#fff",
+      padding: "10px 20px",
+      borderRadius: "8px",
+      fontSize: "14px",
+      zIndex: "999999",
+      fontFamily: "system-ui, sans-serif",
+      pointerEvents: "none",
+      transition: "opacity 0.3s"
+    });
+    document.body.appendChild(toast);
+    setTimeout(() => {
+      toast.style.opacity = "0";
+      setTimeout(() => toast.remove(), 300);
+    }, duration);
+  }
+  async function triggerReport(commentEl, reason) {
+    const reasonCopied = await copyToClipboard(reason);
+    if (reasonCopied) {
+      showToast("✅ 已复制 AI 判定理由，请粘贴到举报框 (Cmd+V)");
+    }
+    const sr = commentEl.shadowRoot;
+    if (!sr) {
+      console.warn(TAG$5, "⚠️ 评论元素无 shadowRoot，无法触发举报");
+      return { opened: false, reasonCopied };
+    }
+    const actionButtons = sr.querySelector("bili-comment-action-buttons-renderer");
+    if (!actionButtons || !actionButtons.shadowRoot) {
+      console.warn(TAG$5, "⚠️ 未找到 action-buttons，无法触发举报");
+      return { opened: false, reasonCopied };
+    }
+    const actionSR = actionButtons.shadowRoot;
+    const moreBtn = actionSR.querySelector("#more button");
+    if (!moreBtn) {
+      console.warn(TAG$5, "⚠️ 未找到「更多」按钮");
+      return { opened: false, reasonCopied };
+    }
+    moreBtn.click();
+    const menu = await waitForElement(
+      () => {
+        const m = actionSR.querySelector("bili-comment-menu");
+        return m && m.shadowRoot ? m : null;
+      },
+      1500
+    );
+    if (!menu) {
+      console.warn(TAG$5, "⚠️ 菜单未出现，可能已被拦截");
+      return { opened: false, reasonCopied };
+    }
+    const menuSR = menu.shadowRoot;
+    const reportLi = findElementByText(menuSR, "举报");
+    if (!reportLi) {
+      console.warn(TAG$5, "⚠️ 菜单中未找到「举报」");
+      return { opened: false, reasonCopied };
+    }
+    reportLi.click();
+    waitAndFillReportForm(reason);
+    return { opened: true, reasonCopied };
+  }
+  function waitForElement(finder, timeoutMs) {
+    return new Promise((resolve) => {
+      const start = Date.now();
+      const check = () => {
+        const el = finder();
+        if (el) return resolve(el);
+        if (Date.now() - start > timeoutMs) return resolve(null);
+        requestAnimationFrame(check);
+      };
+      check();
+    });
+  }
+  function waitAndFillReportForm(reason) {
+    const start = Date.now();
+    const MAX_WAIT = 3e3;
+    const tryFill = () => {
+      const textareas = document.querySelectorAll(
+        "textarea[placeholder*='举报'], textarea[maxlength='200']"
+      );
+      for (const ta of textareas) {
+        if (ta.value.trim() === "") {
+          ta.value = reason.slice(0, 200);
+          ta.dispatchEvent(new Event("input", { bubbles: true }));
+          ta.dispatchEvent(new Event("change", { bubbles: true }));
+          console.log(TAG$5, "✅ 已自动填写举报理由");
+          return;
+        }
+      }
+      if (Date.now() - start < MAX_WAIT) {
+        setTimeout(tryFill, 300);
+      }
+    };
+    setTimeout(tryFill, 400);
+  }
+  async function copyReason(reason) {
+    const ok = await copyToClipboard(reason);
+    if (ok) showToast("✅ 已复制 AI 判定理由，请粘贴到举报框 (Cmd+V)");
+    return ok;
+  }
   function foldEl(el, info, verdict, style = "classic") {
     var _a, _b;
     try {
@@ -972,15 +1118,20 @@ ${ctxBlock}
         block: "#b87070"
       };
       const accent = severityAccent[verdict.severity] ?? "#ccc";
+      const showReportBtn = verdict.severity === "high" || verdict.severity === "block";
+      const reportBtnsHTML = showReportBtn ? `<div style="margin-top:8px;display:flex;gap:8px">
+  <button class="ruozhi-copy-reason" style="padding:3px 10px;font-size:12px;border:1px solid #d4a574;border-radius:4px;background:#fff;color:#d4a574;cursor:pointer">📋 复制理由</button>
+  <button class="ruozhi-report-btn" style="padding:3px 10px;font-size:12px;border:1px solid #d47574;border-radius:4px;background:#fff;color:#d47574;cursor:pointer">🚨 举报此评论</button>
+</div>` : "";
       const html = style === "classic" ? `<div class="ruozhi-folded" style="background:#fff3cd;border:1px solid #ffc107;border-radius:6px;padding:8px 12px;margin:4px 0;font-size:13px;color:#856404;cursor:pointer;user-select:none;font-family:system-ui,sans-serif">
 <span style="margin-right:8px">${label}</span><span style="font-weight:600">${esc(info.uname)}</span><span style="margin:0 8px;color:#ccc">|</span><span style="font-size:12px;color:#aaa">${esc(verdict.reason)}</span><span style="float:right;font-size:11px;color:#999">▼ 展开</span>
 </div><div class="ruozhi-original" style="display:none;padding:8px 12px;background:#f8f9fa;border-left:3px solid #ffc107;margin:4px 0;border-radius:0 6px 6px 0;font-size:13px">
 <div style="margin-bottom:6px;font-size:12px;color:#999">🧠 AI判定: <strong>${esc(verdict.reason)}</strong></div>
-<div style="color:#333;white-space:pre-wrap;word-break:break-word">${esc(info.message)}</div></div>` : `<div class="ruozhi-folded" style="background:#fafafa;border-left:3px solid ${accent};padding:6px 12px;margin:4px 0;font-size:12px;color:#aaa;cursor:pointer;user-select:none;font-family:system-ui,sans-serif">
+<div style="color:#333;white-space:pre-wrap;word-break:break-word">${esc(info.message)}</div>${reportBtnsHTML}</div>` : `<div class="ruozhi-folded" style="background:#fafafa;border-left:3px solid ${accent};padding:6px 12px;margin:4px 0;font-size:12px;color:#aaa;cursor:pointer;user-select:none;font-family:system-ui,sans-serif">
 <span style="margin-right:6px">${label}</span><span style="color:#999">${esc(info.uname)}</span><span style="float:right;font-size:10px;color:#ccc">▾</span>
 </div><div class="ruozhi-original" style="display:none;padding:6px 12px;background:#fafafa;border-left:3px solid #ddd;margin:0 0 4px 0;font-size:12px;color:#999">
 <div style="margin-bottom:4px;font-size:11px;color:#bbb">AI判定: ${esc(verdict.reason)}</div>
-<div style="color:#bbb;white-space:pre-wrap;word-break:break-word">${esc(info.message)}</div></div>`;
+<div style="color:#bbb;white-space:pre-wrap;word-break:break-word">${esc(info.message)}</div>${reportBtnsHTML}</div>`;
       const wrapper = document.createElement("div");
       wrapper.innerHTML = html;
       const foldElDiv = wrapper.firstElementChild;
@@ -994,6 +1145,18 @@ ${ctxBlock}
         const arrow = foldElDiv.querySelector("span:last-child");
         if (arrow) arrow.textContent = hidden ? "▴" : "▾";
       });
+      if (showReportBtn) {
+        const copyBtn = origElDiv.querySelector(".ruozhi-copy-reason");
+        const reportBtn = origElDiv.querySelector(".ruozhi-report-btn");
+        copyBtn == null ? void 0 : copyBtn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          copyReason(verdict.reason);
+        });
+        reportBtn == null ? void 0 : reportBtn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          triggerReport(el, verdict.reason);
+        });
+      }
       return true;
     } catch {
       return false;
