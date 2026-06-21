@@ -8,65 +8,38 @@ import type {
   AIBatchResult,
   ReplyContext,
 } from "./types";
-import { getConfig } from "./config";
-import { log, warn } from "./debug";
-import {
-  buildLearningPrompt,
-  buildRefinementInstruction,
-  shouldRefineProfile,
-  applyRefinedProfile,
-} from "./learning";
 
-const TAG = "[ruozhi-filter]";
+const TAG = "[comment-block]";
 
 function buildSystemPrompt(config: FilterConfig, ctx: ReplyContext): string {
-  const ctxParts: string[] = [`视频：${ctx.videoTitle}`];
-  if (config.sendVideoDesc) {
-    ctxParts.push(`简介：${ctx.videoDesc.slice(0, 200)}`);
-  }
+  return `你是一个评论净化判官。你的任务是根据用户的过滤规则，判断每条评论是否违规。
 
-  const learningSection = buildLearningPrompt();
-  const refinementSection = buildRefinementInstruction();
+## 过滤规则
+${config.prompt || "无"}
 
-  // ★ 知识库注入
-  const kb = config.knowledgeBase;
-  const kbSection =
-    Array.isArray(kb) && kb.length > 0
-      ? `\n\n[知识库] 以下为已知的语境信息，辅助判断反讽/引用/特定称呼：\n${kb.map((e, i) => `${i + 1}. ${e}`).join("\n")}`
-      : "";
+## 上下文
+视频标题：${ctx.videoTitle}
+视频简介：${ctx.videoDesc.slice(0, 500)}
 
-  // ★ 用户画像存在时，提升到最高优先级
-  const hasProfile =
-    config.learnedProfile && typeof config.learnedProfile === "string";
-
-  return `判断评论是否违规。
-
-${
-  hasProfile
-    ? `[最高优先级] 用户过滤画像（与下方规则冲突时，以画像为准）：
-${config.learnedProfile}\n\n`
-    : ""
-}规则：${config.prompt}
-上下文：${ctxParts.join("；")}${kbSection}${hasProfile ? "" : learningSection}${refinementSection}
-
-${hasProfile ? "重要：以上用户画像优先级高于基础规则。当规则与画像冲突时，以用户画像为准判定。" : ""}
-仅输出JSON（无markdown标记）：
-{"verdicts":[{"i":索引,"violation":true,"reason":"理由","severity":"low|medium|high|block"}]}
-只输出违规评论，无违规返回{"verdicts":[]}`;
+## 输出要求
+返回一个JSON对象，格式如下（不要包含任何markdown标记，只输出纯JSON）：
+{
+  "verdicts": [
+    { "rpid": 123, "mid": 456, "violation": true, "reason": "违规原因" }
+  ]
 }
 
-function buildUserMessage(config: FilterConfig, replies: BiliReply[]): string {
-  // 紧凑格式：用数字索引代替 rpid字段名，减少 JSON key 开销
-  const comments = replies.map((r, i) => {
-    const item: Record<string, unknown> = {
-      i, // 索引，AI 返回时用 i 对应，我们再映射回 rpid
-      c: r.content.message,
-    };
-    if (config.sendMid) item.m = r.mid;
-    if (config.sendUname) item.u = r.member.uname;
-    return item;
-  });
-  return JSON.stringify(comments);
+- 只返回违规的评论(violation=true)，没有违规则返回空数组`;
+}
+
+function buildUserMessage(replies: BiliReply[]): string {
+  const comments = replies.map((r) => ({
+    rpid: r.rpid,
+    mid: r.mid,
+    uname: r.member.uname,
+    content: r.content.message,
+  }));
+  return JSON.stringify(comments, null, 2);
 }
 
 /** 调用 DeepSeek API 批量判定 */
@@ -74,37 +47,19 @@ export async function batchJudge(
   config: FilterConfig,
   replies: BiliReply[],
   ctx: ReplyContext,
+  extraPrompt?: string,
 ): Promise<AIBatchResult> {
   if (!config.apiKey || replies.length === 0) return { verdicts: [] };
 
-  const systemPrompt = buildSystemPrompt(config, ctx);
-  const userMessage = buildUserMessage(config, replies);
-  const isRefining = shouldRefineProfile();
-
-  if (isRefining) {
-    log(TAG, `🧠 触发画像更新 (评论判定附带)`);
-  }
-
-  log(
-    TAG,
-    "📤 请求体:",
-    JSON.stringify({
-      model: config.model,
-      systemPrompt:
-        systemPrompt.slice(0, 500) + (systemPrompt.length > 500 ? "..." : ""),
-      userMessage: JSON.parse(userMessage),
-      temperature: 0.1,
-      max_tokens: isRefining ? 2560 : 2048,
-      response_format: { type: "json_object" },
-      isRefining,
-    }),
-  );
-
-  // 构建索引→rpid 映射表
-  const rpidByIndex = new Map(replies.map((r, i) => [i, r.rpid]));
+  const systemPrompt = buildSystemPrompt(config, ctx) + (extraPrompt || "");
+  const userMessage = buildUserMessage(replies);
 
   const fetchStart = Date.now();
 
+  // ★ 使用原生 fetch 的引用，避免被自己的拦截器干扰
+  // 注意：由于我们在 interceptor.ts 中覆盖了 window.fetch，
+  // 但 DeepSeek API URL 不匹配 B站 pattern，所以不会被拦截。
+  // 但如果要绝对安全，可以用 unsafeWindow.fetch
   const fetcher: typeof fetch = (
     typeof unsafeWindow !== "undefined" ? unsafeWindow.fetch : window.fetch
   ) as typeof fetch;
@@ -122,13 +77,16 @@ export async function batchJudge(
           { role: "system", content: systemPrompt },
           { role: "user", content: userMessage },
         ],
-        temperature: 0,
-        max_tokens: isRefining ? 4096 : 2048,
+        temperature: 0.1,
+        max_tokens: 4096,
         response_format: { type: "json_object" },
       }),
     });
 
-    log(TAG, `📡 API HTTP ${response.status}, ${Date.now() - fetchStart}ms`);
+    console.log(
+      TAG,
+      `📡 API HTTP ${response.status}, ${Date.now() - fetchStart}ms`,
+    );
 
     if (!response.ok) {
       const errText = await response.text();
@@ -141,7 +99,7 @@ export async function batchJudge(
     const usage = data.usage;
 
     if (!content) {
-      warn(TAG, "⚠️ AI 返回空内容");
+      console.warn(TAG, "⚠️ AI 返回空内容");
       return { verdicts: [], usage };
     }
 
@@ -152,21 +110,7 @@ export async function batchJudge(
       if (jsonStr.endsWith("```")) jsonStr = jsonStr.slice(0, -3);
       jsonStr = jsonStr.trim();
       const parsed = JSON.parse(jsonStr);
-      // 将紧凑格式的 i 映射回 rpid
-      const verdicts: AIVerdict[] = (parsed.verdicts ?? []).map((v: any) => ({
-        rpid: rpidByIndex.get(v.i) ?? v.rpid ?? 0,
-        mid: v.mid ?? 0,
-        violation: v.violation,
-        reason: v.reason ?? "",
-        severity: v.severity ?? "medium",
-      }));
-
-      // ★ 提取 AI 精炼的学习画像
-      if (parsed.refinedProfile && typeof parsed.refinedProfile === "string") {
-        applyRefinedProfile(parsed.refinedProfile);
-      }
-
-      return { verdicts, usage };
+      return { verdicts: parsed.verdicts ?? [], usage };
     } catch (e) {
       console.error(TAG, "❌ AI 返回解析失败:", e);
       return { verdicts: [], usage };
@@ -203,62 +147,96 @@ export async function testAPIConnection(
   }
 }
 
-/**
- * 独立画像更新：不依赖评论扫描，直接调用 AI 精炼学习画像。
- * 由 recordLearning() 达到阈值时自动触发。
- */
-export async function refineProfileNow(): Promise<void> {
-  return _refineProfile(false);
+/** 获取模型列表 */
+export async function fetchModels(
+  apiEndpoint: string,
+  apiKey: string,
+): Promise<string[]> {
+  try {
+    const fetcher: typeof fetch = (
+      typeof unsafeWindow !== "undefined" ? unsafeWindow.fetch : window.fetch
+    ) as typeof fetch;
+
+    // 将 /chat/completions 替换为 /models
+    const modelsEndpoint = apiEndpoint.replace(/\/chat\/completions$/, "/models");
+
+    const response = await fetcher(modelsEndpoint, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+      },
+    });
+
+    if (!response.ok) return [];
+
+    const data = await response.json();
+    // 兼容 OpenAI 格式: { data: [{ id: "model-name" }, ...] }
+    if (data?.data && Array.isArray(data.data)) {
+      return data.data.map((m: { id: string }) => m.id).filter(Boolean);
+    }
+    return [];
+  } catch {
+    return [];
+  }
 }
 
-/** 强制重新生成画像（忽略阈值，有记录就发） */
-export async function forceRefineProfile(): Promise<void> {
-  return _refineProfile(true);
-}
-
-async function _refineProfile(force: boolean): Promise<void> {
-  if (!force && !shouldRefineProfile()) {
-    log(TAG, "🧠 refineProfile: 未达阈值，跳过");
-    return;
-  }
-
-  const config = getConfig();
-  if (!config.apiKey) {
-    warn(TAG, "⚠️ 画像更新跳过: 未配置API Key");
-    return;
-  }
-
-  const records = config.learningCorrections;
-  if (!Array.isArray(records) || records.length === 0) {
-    warn(TAG, "⚠️ 画像更新跳过: 无学习记录");
-    return;
-  }
-
-  // 强制模式下临时将 lastRefinedCount 置 0 以生成完整指令
-  const savedCount = config.lastRefinedCount;
-  if (force) {
-    config.lastRefinedCount = 0;
-  }
-
-  const instruction = buildRefinementInstruction();
-
-  if (force) {
-    config.lastRefinedCount = savedCount;
-  }
-
-  if (!instruction) {
-    warn(TAG, "⚠️ 画像更新跳过: 无更新指令");
-    return;
-  }
-
-  log(
-    TAG,
-    `🧠 ${force ? "强制" : "自动"}画像更新中... (指令${instruction.length}字)`,
-  );
+/** AI学习：根据标记评论生成过滤规则和AI提示词 */
+export async function learnFromMarked(
+  config: FilterConfig,
+  markedComments: { message: string; reason: string }[],
+  existingAIRules: { pattern: string; isRegex: boolean; description: string }[],
+  likeComments?: { message: string; reason: string; rule: string }[],
+  dislikeComments?: { message: string; reason: string; rule: string }[],
+): Promise<{ rules: { pattern: string; isRegex: boolean; description: string; matchedComments: string[] }[]; aiPrompt: string }> {
+  if (!config.apiKey || (markedComments.length === 0 && (!likeComments || likeComments.length === 0) && (!dislikeComments || dislikeComments.length === 0))) return { rules: [], aiPrompt: "" };
 
   const fetcher: typeof fetch = (
     typeof unsafeWindow !== "undefined" ? unsafeWindow.fetch : window.fetch
   ) as typeof fetch;
+
+  // 去掉表情符号后用于训练
+  const cleanMessage = (msg: string) => msg.replace(/\[\[.*?\]\]/g, "").replace(/\[.*?\]/g, "").trim();
+  const samples = markedComments.map((c, i) => `${i + 1}. "${cleanMessage(c.message)}" (用户原因: ${c.reason || "未说明"})`).join("\n");
+  const existingRulesText = existingAIRules.length > 0 
+    ? `\n已有的AI规则（请分析后合并/优化/删除，给出最终版本）：\n${existingAIRules.map((r, i) => `${i + 1}. [${r.isRegex ? "正则" : "关键词"}] ${r.pattern} - ${r.description}`).join("\n")}` 
+    : "";
+
+  // 构建点赞点踩评论文本
+  let feedbackText = "";
+  if (likeComments && likeComments.length > 0) {
+    feedbackText += `\n用户对这些评论的屏蔽效果满意：\n${likeComments.map((c, i) => `${i + 1}. "${cleanMessage(c.message)}" (屏蔽原因: ${c.rule})`).join("\n")}`;
+  }
+  if (dislikeComments && dislikeComments.length > 0) {
+    feedbackText += `\n用户表示以下评论被规则误判：\n${dislikeComments.map((c, i) => `${i + 1}. "${cleanMessage(c.message)}" (屏蔽原因: ${c.rule})`).join("\n")}`;
+  }
+
+  const prompt = `你是一个评论过滤规则生成器。用户标记了一些不想看的评论，请分析这些评论的共同特征，分类生成正则表达式、关键词规则，并生成一段AI提示词。
+
+用户标记的评论：
+${samples}
+${existingRulesText}
+${feedbackText}
+
+请返回JSON格式：
+{
+  "regexRules": [
+    {"pattern": "正则表达式", "description": "规则描述", "matchedComments": ["匹配到的评论1", "匹配到的评论2"]}
+  ],
+  "keywordRules": [
+    {"pattern": "关键词", "description": "规则描述", "matchedComments": ["匹配到的评论1", "匹配到的评论2"]}
+  ],
+  "aiPrompt": "一段总结性的提示词，描述这些评论的共同特征，用于AI判断屏蔽"
+}
+
+要求：
+1. 正则和关键词必须分开返回，不要混在一起
+2. 正则表达式用于匹配模式特征（如重复字符、特定格式）
+3. 关键词用于匹配具体词汇
+4. 忽略表情符号（如[大哭]、[笑哭]等方括号内的表情），不要基于表情生成规则
+5. matchedComments 必须填写用户标记评论的原文（去掉表情后），不要写"评论xx"，最多2条
+6. 合并/优化已有规则，给出最终版本
+7. aiPrompt 要总结所有标记评论的共同特征，是一段完整的描述
+8. 返回纯JSON，不要markdown标记`;
 
   try {
     const response = await fetcher(config.apiEndpoint, {
@@ -269,45 +247,39 @@ async function _refineProfile(force: boolean): Promise<void> {
       },
       body: JSON.stringify({
         model: config.model,
-        messages: [
-          {
-            role: "system",
-            content:
-              '你是用户过滤画像维护助手。根据用户对AI判定的纠正记录，输出精炼的过滤画像。\n\n纠正记录说明：\n- "放过" = 用户将AI误判的内容恢复了（用户认为这些不该被过滤）\n- "拉黑" = 用户手动拉黑了AI漏判的内容（用户认为这些应该被过滤）\n\n请严格按以下格式输出画像（${MAX_PROFILE_LENGTH}字以内）：\n应过滤：[用户明确不想看的内容，基于拉黑案例归纳]\n应放过：[用户想保留的内容，基于放过案例归纳]\n立场：[一句话概括用户倾向]\n\n仅输出JSON：{"refinedProfile":"..."}',
-          },
-          { role: "user", content: instruction },
-        ],
-        temperature: 0,
-        max_tokens: 512,
+        messages: [{ role: "user", content: prompt }],
+        temperature: 0.3,
+        max_tokens: 2048,
         response_format: { type: "json_object" },
       }),
     });
 
-    if (!response.ok) {
-      console.error(TAG, `❌ 画像更新API ${response.status}`);
-      return;
-    }
+    if (!response.ok) return { rules: [], aiPrompt: "" };
 
     const data = await response.json();
     const content = data.choices?.[0]?.message?.content;
-    if (!content) {
-      warn(TAG, "⚠️ 画像更新: AI 返回空内容");
-      return;
-    }
+    if (!content) return { rules: [], aiPrompt: "" };
 
     let jsonStr = content.trim();
     if (jsonStr.startsWith("```json")) jsonStr = jsonStr.slice(7);
     if (jsonStr.startsWith("```")) jsonStr = jsonStr.slice(3);
     if (jsonStr.endsWith("```")) jsonStr = jsonStr.slice(0, -3);
-    jsonStr = jsonStr.trim();
 
-    const parsed = JSON.parse(jsonStr);
-    if (parsed.refinedProfile && typeof parsed.refinedProfile === "string") {
-      applyRefinedProfile(parsed.refinedProfile);
-    } else {
-      warn(TAG, "⚠️ 画像更新: 未收到 refinedProfile 字段");
-    }
-  } catch (err) {
-    console.error(TAG, "❌ 画像更新失败:", err);
+    const parsed = JSON.parse(jsonStr.trim());
+    
+    // 合并正则和关键词规则
+    const regexRules = (parsed.regexRules ?? []).map((r: any) => ({ ...r, isRegex: true }));
+    const keywordRules = (parsed.keywordRules ?? []).map((r: any) => ({ ...r, isRegex: false }));
+    const rules = (parsed.rules ?? []).concat(regexRules, keywordRules);
+    
+    // AI提示词后加表情过滤规则
+    const aiPrompt = (parsed.aiPrompt ?? "") + "\n只有一个表情的表情符号的（如[[doge]]）";
+    
+    return {
+      rules,
+      aiPrompt,
+    };
+  } catch {
+    return { rules: [], aiPrompt: "" };
   }
 }

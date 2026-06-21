@@ -11,22 +11,11 @@ import {
   refreshConfig,
   setUpdateStats,
 } from "./interceptor";
-import { pruneCache, getBlacklistCount, initMemoryCache } from "./db";
-import { log } from "./debug";
-import { refineProfileNow } from "./api";
-import { setRefineCallback } from "./learning";
+import { pruneCache } from "./db";
 
-const TAG = "[ruozhi-filter]";
+const TAG = "[comment-block]";
 
 async function main(): Promise<void> {
-  log(TAG, "🚀 插件启动中...");
-
-  // ★ 连接学习模块 → 画像更新（独立于评论扫描）
-  setRefineCallback(refineProfileNow);
-
-  // ★ 优先加载内存缓存（黑名单 + 缓存），使后续扫描能瞬间判定
-  initMemoryCache().catch(() => {});
-
   let config: FilterConfig = loadConfig();
   if (!config.apiKey) {
     config = { ...DEFAULT_CONFIG };
@@ -36,8 +25,15 @@ async function main(): Promise<void> {
   startDOMScanner();
 
   const titleEl = document.querySelector("title");
+  let lastUrl = window.location.href;
   if (titleEl) {
     new MutationObserver(() => {
+      const newUrl = window.location.href;
+      // 视频切换时清空统计记录
+      if (newUrl !== lastUrl) {
+        lastUrl = newUrl;
+        window.dispatchEvent(new CustomEvent("cb-video-changed"));
+      }
       updateContext({
         videoTitle: document.title.replace(/[ _-]哔哩哔哩.*$/, ""),
       });

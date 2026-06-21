@@ -6,17 +6,16 @@ export default defineConfig({
     monkey({
       entry: "src/main.ts",
       userscript: {
-        name: "信息茧房放大器 - B站降智评论过滤器",
-        namespace: "ruozhi-filter",
-        version: "0.2.4",
-        description: "AI驱动：自动识别并折叠B站评论区中的降智/引战言论",
-        author: "ruozhi-filter",
-        match: ["*://www.bilibili.com/video/*"],
+        name: "哔哩哔哩评论区屏蔽",
+        namespace: "bilibili-comment-block",
+        version: "1.0.0",
+        description: "AI驱动的B站评论过滤器，支持关键词屏蔽、黑名单、深色模式",
+        match: ["*://www.bilibili.com/video/*", "*://www.bilibili.com/list*"],
         grant: ["GM_getValue", "GM_setValue", "GM_deleteValue", "unsafeWindow"],
         license: "MIT",
       },
       build: {
-        fileName: "ruozhi-filter.user.js",
+        fileName: "bilibili-comment-block.user.js",
         autoGrant: true,
       },
     }),

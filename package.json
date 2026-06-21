@@ -1,7 +1,7 @@
 {
-  "name": "ruozhi-filter",
-  "version": "0.2.4",
-  "description": "信息茧房放大器 - B站评论AI过滤器",
+  "name": "bilibili-comment-block",
+  "version": "1.0.0",
+  "description": "哔哩哔哩评论区屏蔽 - AI驱动的B站评论过滤器",
   "private": true,
   "type": "module",
   "scripts": {

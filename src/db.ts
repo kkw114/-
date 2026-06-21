@@ -1,26 +1,13 @@
 // ============================================================
-// db.ts - IndexedDB 封装: 黑名单 & LRU缓存
-// 性能关键: 启动时将数据加载到内存 Map，查询 O(1) 瞬间完成
+// db.ts - IndexedDB 封装: 黑名单 & LRU缓存 & 关键词 & AI学习 & 误判
 // ============================================================
 import { openDB, type IDBPDatabase } from "idb";
-import type { BlacklistRecord, CacheEntry } from "./types";
-import { log } from "./debug";
+import type { BlacklistRecord, CacheEntry, KeywordRule, MarkedComment, AIRule, FalsePositive } from "./types";
 
-const DB_NAME = "ruozhi-filter-db";
-const DB_VERSION = 4;
+const DB_NAME = "bilibili-comment-block-db";
+const DB_VERSION = 6;
 
 let dbPromise: Promise<IDBPDatabase> | null = null;
-
-// ── 内存缓存（查询瞬间完成，无需 await）──
-
-/** 黑名单内存索引: mid → record */
-const blByMid = new Map<number, BlacklistRecord>();
-/** 黑名单内存索引: username hash → record */
-const blByUid = new Map<number, BlacklistRecord>();
-/** 评论缓存内存索引: hash → entry (最多保留 3000 条) */
-const cacheByHash = new Map<string, CacheEntry>();
-/** 内存缓存是否已初始化 */
-let memoryCacheReady = false;
 
 function getDB(): Promise<IDBPDatabase> {
   if (!dbPromise) {
@@ -30,33 +17,42 @@ function getDB(): Promise<IDBPDatabase> {
           if (!db.objectStoreNames.contains("blacklist")) {
             const bl = db.createObjectStore("blacklist", { keyPath: "mid" });
             bl.createIndex("timestamp", "timestamp");
-            bl.createIndex("severity", "severity");
           }
         }
         if (oldVersion < 2) {
-          // v2: 改用 username hash 作为key，先删旧表重建
           if (db.objectStoreNames.contains("blacklist")) {
             db.deleteObjectStore("blacklist");
           }
-          const bl = db.createObjectStore("blacklist", {
-            keyPath: "uid",
-          });
+          const bl = db.createObjectStore("blacklist", { keyPath: "uid" });
           bl.createIndex("timestamp", "timestamp");
-          bl.createIndex("severity", "severity");
         }
         if (oldVersion < 3) {
-          // v3: 添加 source 字段 (manual/auto)，旧数据默认为 auto
-          // 新字段自动兼容，无需重建store
+          // v3: source 字段
         }
         if (oldVersion < 4) {
-          // v4: 改回 mid 作为主键 (username hash 不稳定，用户可改名)
-          if (db.objectStoreNames.contains("blacklist")) {
-            db.deleteObjectStore("blacklist");
+          // v4: 添加关键词库
+          if (!db.objectStoreNames.contains("keywords")) {
+            const kw = db.createObjectStore("keywords", { keyPath: "id" });
+            kw.createIndex("timestamp", "timestamp");
           }
-          const bl = db.createObjectStore("blacklist", { keyPath: "mid" });
-          bl.createIndex("timestamp", "timestamp");
-          bl.createIndex("severity", "severity");
-          bl.createIndex("uid", "uid");
+        }
+        if (oldVersion < 5) {
+          // v5: 添加标记评论和AI规则
+          if (!db.objectStoreNames.contains("marked")) {
+            const mk = db.createObjectStore("marked", { keyPath: "id" });
+            mk.createIndex("timestamp", "timestamp");
+          }
+          if (!db.objectStoreNames.contains("aiRules")) {
+            const ar = db.createObjectStore("aiRules", { keyPath: "id" });
+            ar.createIndex("createdAt", "createdAt");
+          }
+        }
+        if (oldVersion < 6) {
+          // v6: 添加误判记录
+          if (!db.objectStoreNames.contains("falsePositives")) {
+            const fp = db.createObjectStore("falsePositives", { keyPath: "id" });
+            fp.createIndex("timestamp", "timestamp");
+          }
         }
         if (!db.objectStoreNames.contains("cache")) {
           const c = db.createObjectStore("cache", { keyPath: "hash" });
@@ -70,7 +66,6 @@ function getDB(): Promise<IDBPDatabase> {
 
 // ---------- 工具 ----------
 
-/** 简单字符串 hash (djb2) */
 function strHash(s: string): number {
   let h = 5381;
   for (let i = 0; i < s.length; i++) {
@@ -79,12 +74,10 @@ function strHash(s: string): number {
   return h;
 }
 
-/** 根据用户名生成黑名单key */
 export function blacklistKey(uname: string): number {
   return strHash(uname.trim());
 }
 
-/** 生成评论hash (基于内容和uid) */
 export function commentHash(message: string, mid: number): string {
   const input = `${mid}:${message.trim().slice(0, 200)}`;
   return strHash(input).toString(16);
@@ -92,106 +85,73 @@ export function commentHash(message: string, mid: number): string {
 
 // ---------- 黑名单操作 ----------
 
-/** 同步查询黑名单（内存命中，O(1)，无需 await） */
-export function isBlacklistedSync(
-  mid: number,
-  uname: string,
-): BlacklistRecord | null {
-  if (mid > 0) {
-    const record = blByMid.get(mid);
-    if (record) return record;
-  }
-  const uid = blacklistKey(uname);
-  return blByUid.get(uid) ?? null;
-}
-
-/** 同步查询缓存（内存命中，O(1)，无需 await） */
-export function getCacheSync(hash: string): CacheEntry | null {
-  return cacheByHash.get(hash) ?? null;
-}
-
-/** 查询用户是否在黑名单中 (key = mid, fallback to username hash) */
-export async function isBlacklisted(
-  mid: number,
-  uname: string,
-): Promise<BlacklistRecord | null> {
-  // 优先查内存
-  const mem = isBlacklistedSync(mid, uname);
-  if (mem) return mem;
-
+export async function isBlacklisted(mid: number, uname: string): Promise<BlacklistRecord | null> {
   const db = await getDB();
-  // 优先用 mid（B站UID唯一且稳定）
-  if (mid > 0) {
-    const record = await db.get("blacklist", mid);
-    if (record) return record;
-  }
-  // fallback: username hash (mid为0时)
-  return (
-    (await db.getFromIndex("blacklist", "uid", blacklistKey(uname))) ?? null
-  );
+  const key = mid > 0 ? mid : blacklistKey(uname);
+  const record = await db.get("blacklist", key);
+  return record ?? null;
 }
 
-/** 将用户加入黑名单 (key = mid, fallback to username hash) */
 export async function addToBlacklist(record: BlacklistRecord): Promise<void> {
   const db = await getDB();
   const uid = blacklistKey(record.uname);
-  // B站新UI的Shadow DOM不总是暴露data-mid，此时用username hash做key
-  const key = record.mid > 0 ? record.mid : uid;
-  const entry = { ...record, mid: key, uid };
-  await db.put("blacklist", entry);
-  // 同步更新内存
-  if (memoryCacheReady) {
-    blByMid.set(key, entry);
-    blByUid.set(uid, entry);
-  }
+  await db.put("blacklist", { ...record, uid });
 }
 
-/** 获取所有黑名单记录 */
 export async function getAllBlacklist(): Promise<BlacklistRecord[]> {
   const db = await getDB();
   return db.getAll("blacklist");
 }
 
-/** 从黑名单移除 (by mid) */
-export async function removeFromBlacklist(mid: number): Promise<void> {
+export async function removeFromBlacklist(uid: number): Promise<void> {
   const db = await getDB();
-  // 同步删除内存
-  const record = blByMid.get(mid);
-  if (record) {
-    blByMid.delete(mid);
-    if (record.uid) blByUid.delete(record.uid);
-  }
-  await db.delete("blacklist", mid);
+  await db.delete("blacklist", uid);
 }
 
-/** 获取黑名单总数 */
-export async function getBlacklistCount(): Promise<number> {
-  const db = await getDB();
-  return db.count("blacklist");
-}
-
-/** 清空黑名单 */
 export async function clearBlacklist(): Promise<void> {
   const db = await getDB();
-  blByMid.clear();
-  blByUid.clear();
   await db.clear("blacklist");
+}
+
+// ---------- 关键词操作 ----------
+
+export async function getAllKeywords(): Promise<KeywordRule[]> {
+  const db = await getDB();
+  return db.getAll("keywords");
+}
+
+export async function addKeyword(rule: KeywordRule): Promise<void> {
+  const db = await getDB();
+  await db.put("keywords", rule);
+}
+
+export async function updateKeyword(rule: KeywordRule): Promise<void> {
+  const db = await getDB();
+  await db.put("keywords", rule);
+}
+
+export async function removeKeyword(id: number): Promise<void> {
+  const db = await getDB();
+  await db.delete("keywords", id);
+}
+
+export async function clearKeywords(): Promise<void> {
+  const db = await getDB();
+  await db.clear("keywords");
+}
+
+export async function importKeywords(rules: KeywordRule[]): Promise<void> {
+  const db = await getDB();
+  const tx = db.transaction("keywords", "readwrite");
+  for (const rule of rules) {
+    await tx.store.put(rule);
+  }
+  await tx.done;
 }
 
 // ---------- LRU 缓存操作 ----------
 
-/** 查询缓存 */
 export async function getCache(hash: string): Promise<CacheEntry | null> {
-  // 优先查内存
-  const mem = cacheByHash.get(hash);
-  if (mem) {
-    if (Date.now() - mem.timestamp > 24 * 60 * 60 * 1000) {
-      cacheByHash.delete(hash);
-      return null;
-    }
-    return mem;
-  }
-
   const db = await getDB();
   const entry = await db.get("cache", hash);
   if (!entry) return null;
@@ -202,56 +162,18 @@ export async function getCache(hash: string): Promise<CacheEntry | null> {
   return entry;
 }
 
-/** 写入缓存 */
 export async function setCache(entry: CacheEntry): Promise<void> {
   const db = await getDB();
   await db.put("cache", entry);
-  // 同步更新内存（LRU: 超过上限时删除最旧的）
-  if (memoryCacheReady) {
-    cacheByHash.set(entry.hash, entry);
-    if (cacheByHash.size > 3000) {
-      const oldest = [...cacheByHash.entries()].sort(
-        (a, b) => a[1].timestamp - b[1].timestamp,
-      )[0];
-      if (oldest) cacheByHash.delete(oldest[0]);
-    }
-  }
 }
 
-/** 删除单条评论缓存（同时清除内存和 IndexedDB） */
-export async function deleteCommentFromCache(hash: string): Promise<void> {
-  cacheByHash.delete(hash);
-  const db = await getDB();
-  await db.delete("cache", hash);
-}
-
-/** 清空缓存 */
 export async function clearCache(): Promise<void> {
   const db = await getDB();
-  cacheByHash.clear();
   await db.clear("cache");
 }
 
-/** 清理过期缓存 (保留最近5000条) */
 export async function pruneCache(): Promise<void> {
   const db = await getDB();
-  // 同时清理内存
-  const now = Date.now();
-  const expiry = 24 * 60 * 60 * 1000;
-  for (const [hash, entry] of cacheByHash) {
-    if (now - entry.timestamp > expiry) cacheByHash.delete(hash);
-  }
-  // 截断到 3000
-  if (cacheByHash.size > 3000) {
-    const sorted = [...cacheByHash.entries()].sort(
-      (a, b) => b[1].timestamp - a[1].timestamp,
-    );
-    cacheByHash.clear();
-    for (const [hash, entry] of sorted.slice(0, 3000)) {
-      cacheByHash.set(hash, entry);
-    }
-  }
-
   const all = await db.getAll("cache");
   all.sort((a, b) => b.timestamp - a.timestamp);
   const keep = all.slice(0, 5000);
@@ -264,36 +186,118 @@ export async function pruneCache(): Promise<void> {
   await tx.done;
 }
 
-// ── 内存缓存初始化 ──
+// ---------- 标记评论操作 ----------
 
-/** 初始化内存缓存：从 IndexedDB 加载所有黑名单和缓存到内存 */
-export async function initMemoryCache(): Promise<void> {
-  if (memoryCacheReady) return;
-  try {
-    const db = await getDB();
-    const allBL = await db.getAll("blacklist");
-    for (const record of allBL) {
-      blByMid.set(record.mid, record);
-      if (record.uid) blByUid.set(record.uid, record);
+const MAX_MARKED = 1000;
+let markedIdCounter = Date.now();
+
+export async function addMarkedComment(comment: Omit<MarkedComment, "id">): Promise<void> {
+  const db = await getDB();
+  await db.put("marked", { ...comment, id: markedIdCounter++ });
+  // 超过上限时删除最旧的
+  const all = await db.getAll("marked");
+  if (all.length > MAX_MARKED) {
+    all.sort((a, b) => a.timestamp - b.timestamp);
+    const toDelete = all.slice(0, all.length - MAX_MARKED);
+    const tx = db.transaction("marked", "readwrite");
+    for (const item of toDelete) {
+      await tx.store.delete(item.id);
     }
-
-    const allCache = await db.getAll("cache");
-    const now = Date.now();
-    const expiry = 24 * 60 * 60 * 1000;
-    allCache.sort((a, b) => b.timestamp - a.timestamp);
-    for (const entry of allCache.slice(0, 3000)) {
-      if (now - entry.timestamp <= expiry) {
-        cacheByHash.set(entry.hash, entry);
-      }
-    }
-
-    memoryCacheReady = true;
-    log(
-      "[ruozhi-filter]",
-      `📋 内存缓存就绪: 黑名单=${blByMid.size}条, 缓存=${cacheByHash.size}条`,
-    );
-  } catch (err) {
-    console.error("[ruozhi-filter]", "❌ 内存缓存初始化失败:", err);
-    // 失败不阻塞，走 IndexedDB 降级路径
+    await tx.done;
   }
+}
+
+export async function getAllMarkedComments(): Promise<MarkedComment[]> {
+  const db = await getDB();
+  const all = await db.getAll("marked");
+  // 按时间倒序，新的在前面
+  return all.sort((a, b) => b.timestamp - a.timestamp);
+}
+
+/** 获取未学习的标记评论 */
+export async function getUnlearnedMarkedComments(): Promise<MarkedComment[]> {
+  const all = await getAllMarkedComments();
+  return all.filter((c) => !c.learned);
+}
+
+/** 标记评论为已学习 */
+export async function markCommentsAsLearned(ids: number[]): Promise<void> {
+  const db = await getDB();
+  const tx = db.transaction("marked", "readwrite");
+  for (const id of ids) {
+    const item = await tx.store.get(id);
+    if (item) {
+      item.learned = true;
+      await tx.store.put(item);
+    }
+  }
+  await tx.done;
+}
+
+export async function removeMarkedComment(id: number): Promise<void> {
+  const db = await getDB();
+  await db.delete("marked", id);
+}
+
+export async function clearMarkedComments(): Promise<void> {
+  const db = await getDB();
+  await db.clear("marked");
+}
+
+export async function getMarkedCount(): Promise<number> {
+  const db = await getDB();
+  return db.count("marked");
+}
+
+// ---------- AI 规则操作 ----------
+
+let aiRuleIdCounter = Date.now();
+
+export async function addAIRule(rule: Omit<AIRule, "id">): Promise<void> {
+  const db = await getDB();
+  await db.put("aiRules", { ...rule, id: aiRuleIdCounter++ });
+}
+
+export async function getAllAIRules(): Promise<AIRule[]> {
+  const db = await getDB();
+  return db.getAll("aiRules");
+}
+
+export async function updateAIRule(rule: AIRule): Promise<void> {
+  const db = await getDB();
+  await db.put("aiRules", rule);
+}
+
+export async function removeAIRule(id: number): Promise<void> {
+  const db = await getDB();
+  await db.delete("aiRules", id);
+}
+
+export async function clearAIRules(): Promise<void> {
+  const db = await getDB();
+  await db.clear("aiRules");
+}
+
+// ---------- 误判记录操作 ----------
+
+let falsePositiveIdCounter = Date.now();
+
+export async function addFalsePositive(record: Omit<FalsePositive, "id">): Promise<void> {
+  const db = await getDB();
+  await db.put("falsePositives", { ...record, id: falsePositiveIdCounter++ });
+}
+
+export async function getAllFalsePositives(): Promise<FalsePositive[]> {
+  const db = await getDB();
+  return db.getAll("falsePositives");
+}
+
+export async function removeFalsePositive(id: number): Promise<void> {
+  const db = await getDB();
+  await db.delete("falsePositives", id);
+}
+
+export async function clearFalsePositives(): Promise<void> {
+  const db = await getDB();
+  await db.clear("falsePositives");
 }

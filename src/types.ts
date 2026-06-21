@@ -46,60 +46,51 @@ export interface BiliReplyResponse {
   };
 }
 
-/** 用户纠正记录：AI自我学习的数据来源 */
-export interface LearningCorrection {
-  /** 纠正类型 */
-  type: "unblock" | "misjudge" | "manual_blacklist";
-  /** 评论原文（截取前200字） */
-  message: string;
-  /** AI原始判定理由 (unblock/misjudge 时有效) */
-  aiReason?: string;
-  /** AI原始判定严重度 */
-  aiSeverity?: string;
-  /** 用户名 */
-  uname: string;
-  /** 时间戳 */
-  timestamp: number;
-  /** 视频标题 */
-  videoTitle?: string;
+/** AI服务提供商预设 */
+export interface AIProvider {
+  name: string;
+  apiEndpoint: string;
+  models: string[];
 }
+
+/** 预设AI服务提供商 */
+export const AI_PROVIDERS: AIProvider[] = [
+  {
+    name: "DeepSeek",
+    apiEndpoint: "https://api.deepseek.com/chat/completions",
+    models: ["deepseek-chat", "deepseek-reasoner"],
+  },
+  {
+    name: "Mimo (小米)",
+    apiEndpoint: "https://api.xiaomimimo.com/v1/chat/completions",
+    models: ["MiMo-7B-RL", "mimo-v2.5"],
+  },
+];
 
 /** 用户自定义过滤规则 */
 export interface FilterConfig {
   apiKey: string;
+  /** 各提供商独立保存的 API Key */
+  apiKeys: {
+    deepseek: string;
+    mimo: string;
+    custom: string;
+  };
+  /** AI服务提供商: "deepseek" | "mimo" | "custom" */
+  provider: "deepseek" | "mimo" | "custom";
   apiEndpoint: string;
   model: string;
   prompt: string;
-  /** 折叠样式: "none"=完全隐藏, "classic"=黄色警告条, "light"=极简灰线, "dim"=隐形弱化 */
-  foldMode: "none" | "classic" | "light" | "dim";
+  /** 是否开启折叠模式(而非完全隐藏) */
+  foldMode: boolean;
+  /** 纯本地模式: 禁用AI，只使用关键词和黑名单 */
+  localOnly: boolean;
   /** 是否启用AI过滤 */
   enableAI: boolean;
-  /** 是否启用本地黑名单 */
-  enableBlacklist: boolean;
-  /** 手动拉黑是否需要确认弹窗 */
-  blacklistConfirm: boolean;
-  /** 开发者模式：开启后显示调试日志 */
-  devMode: boolean;
-  /** 黑名单严格度: 0 = 仅折叠, 1 = 折叠+标记, 2 = 直接拉黑 */
-  blacklistStrictness: number;
   /** 自定义token单价 (元/百万token) */
   pricePerMToken: number;
-  /** 发送请求时附带用户名 */
-  sendUname: boolean;
-  /** 发送请求时附带用户mid */
-  sendMid: boolean;
-  /** 发送请求时附带视频简介 */
-  sendVideoDesc: boolean;
-  /** 启用AI自我学习：根据用户纠正行为调整判定 */
-  learningEnabled: boolean;
-  /** AI凝练的学习画像（注入System Prompt的核心片段，由AI持续维护，最长300字） */
-  learnedProfile: string;
-  /** 学习记录（最近500条纠正，UI展示+AI学习用） */
-  learningCorrections: LearningCorrection[];
-  /** 上次更新画像时已处理的记录数（新累积 ≥20 条触发下次更新） */
-  lastRefinedCount: number;
-  /** 知识库：用户手动添加的辅助判定条目（如"XX是对XX的歧视性称呼"） */
-  knowledgeBase: string[];
+  /** 深色模式: "light" | "dark" | "auto" */
+  darkMode: "light" | "dark" | "auto";
 }
 
 /** AI判定结果: 单条评论的违规判定 */
@@ -108,7 +99,6 @@ export interface AIVerdict {
   mid: number;
   violation: boolean;
   reason: string;
-  severity: "none" | "low" | "medium" | "high" | "block";
 }
 
 /** AI批处理返回 */
@@ -121,6 +111,27 @@ export interface AIBatchResult {
   };
 }
 
+/** 被屏蔽的评论记录 */
+export interface FilteredComment {
+  id: number;
+  uname: string;
+  message: string;
+  reason: string;
+  timestamp: number;
+  /** 用户反馈: "like"=点赞, "dislike"=点踩, null=无反馈 */
+  feedback?: "like" | "dislike" | null;
+}
+
+/** 误判记录（用于AI学习） */
+export interface FalsePositive {
+  id: number;
+  uname: string;
+  message: string;
+  reason: string;
+  originalReason: string;
+  timestamp: number;
+}
+
 /** 累计统计 */
 export interface AccumulatedStats {
   totalFiltered: number;
@@ -129,9 +140,9 @@ export interface AccumulatedStats {
   totalTokens: number;
   promptTokens: number;
   completionTokens: number;
-  /** 各严重度计数 */
-  severityCounts: Record<string, number>;
   lastUpdate: number;
+  /** 最近被屏蔽的评论 (最多保留50条) */
+  recentFiltered: FilteredComment[];
 }
 
 /** 黑名单记录 */
@@ -145,7 +156,6 @@ export interface BlacklistRecord {
   videoTitle: string;
   videoUrl: string;
   timestamp: number;
-  severity: AIVerdict["severity"];
   /** 来源: auto=AI自动, manual=用户手动 */
   source: "auto" | "manual";
 }
@@ -155,7 +165,6 @@ export interface CacheEntry {
   hash: string;
   violation: boolean;
   reason: string;
-  severity: AIVerdict["severity"];
   timestamp: number;
 }
 
@@ -166,33 +175,66 @@ export interface ReplyContext {
   videoDesc: string;
 }
 
+/** 用户标记的不想看的评论 */
+export interface MarkedComment {
+  id: number;
+  uname: string;
+  message: string;
+  reason: string;
+  timestamp: number;
+  /** 是否已被AI学习 */
+  learned?: boolean;
+}
+
+/** AI学习生成的过滤规则 */
+export interface AIRule {
+  id: number;
+  /** 规则内容（正则表达式或关键词） */
+  pattern: string;
+  /** 是否为正则 */
+  isRegex: boolean;
+  /** 规则描述 */
+  description: string;
+  /** 匹配的评论列表（仅备注，不参与屏蔽） */
+  matchedComments: string[];
+  /** 创建时间 */
+  createdAt: number;
+  /** 最后学习时间 */
+  lastLearnedAt: number;
+  /** 基于多少条样本学习 */
+  sampleCount: number;
+}
+
+/** 关键词屏蔽规则 */
+export interface KeywordRule {
+  id: number;
+  /** 关键词或正则表达式 */
+  pattern: string;
+  /** 是否为正则表达式 */
+  isRegex: boolean;
+  /** 是否启用 */
+  enabled: boolean;
+  /** 备注 */
+  note: string;
+  /** 创建时间 */
+  timestamp: number;
+}
+
 /** 默认配置 */
 export const DEFAULT_CONFIG: FilterConfig = {
   apiKey: "",
+  apiKeys: {
+    deepseek: "",
+    mimo: "",
+    custom: "",
+  },
+  provider: "deepseek",
   apiEndpoint: "https://api.deepseek.com/chat/completions",
   model: "deepseek-chat",
-  prompt: `请帮我识别以下评论中，具有明显性别对立、引战、人身攻击、煽动性、仇恨言论的内容。
-
-违规判定维度：
-- **性别对立**：将某一性别标签化、污名化，煽动敌视/仇恨（如"女人都拜金""男人都好色"）
-- **人身攻击**：针对个人的侮辱、谩骂、诅咒
-- **引战/煽动**：故意挑起争端，使用极端化言论
-- **降智煽动**：以偏概全、简化认知、传播刻板印象的明显反智言论
-- **仇恨言论**：涉及种族、地域、性别、性取向等的歧视性言论
-- **引用/复述判断**：如果用户是在引用、复述他人的歧视言论以反驳、批评或表达反对态度（如"有人说女人都拜金，这太荒谬了"），则不应判定为违规。只有当用户本人表达、认同或宣扬歧视观点时，才标记为违规`,
-  foldMode: "classic",
-  enableAI: true,
-  enableBlacklist: true,
-  blacklistConfirm: true,
-  devMode: false,
-  blacklistStrictness: 1,
+  prompt: "",
+  foldMode: true,
+  localOnly: false,
+  enableAI: false,
   pricePerMToken: 1.1,
-  sendUname: false,
-  sendMid: false,
-  sendVideoDesc: false,
-  learningEnabled: true,
-  learnedProfile: "",
-  learningCorrections: [],
-  lastRefinedCount: 0,
-  knowledgeBase: [],
+  darkMode: "auto",
 };
