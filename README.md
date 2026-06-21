@@ -1,96 +1,121 @@
-<p align="center">
-  <img src="https://img.shields.io/badge/状态-能用就行-brightgreen?style=flat-square" alt="status" />
-  <img src="https://img.shields.io/badge/License-MIT-blue?style=flat-square" alt="license" />
-  <img src="https://img.shields.io/badge/PR-welcome-ff69b4?style=flat-square" alt="pr" />
-</p>
+# 哔哩哔哩评论区屏蔽
 
-<h1 align="center">🧠 信息茧房放大器</h1>
-<h3 align="center"><i>Info Cocoon Amplifier — 看不见就不存在。</i></h3>
-
-<p align="center">
-  <sub>AI 驱动的 B 站降智评论过滤器 · Tampermonkey 脚本 · DeepSeek 提供智能判定</sub>
-</p>
-
----
-
-## 💬 作者的话
-
-你是否厌倦了大数据总给你推送那些争议性极大、让你迅速上火的视频？是否懒得在评论区跟满嘴喷粪的人争论半句？
-
-开启这个插件，把评论区变成你的私人信息茧房——看不见，就不存在。
-
-> 本插件仅图一乐，切莫认真。**我即算法，我即茧房。**
->
-> 遵循 MIT 开源协议，欢迎 fork 修改。
-
----
-
-## ✨ 特性
-
-| 功能 | 说明 |
-|------|------|
-| 🔍 纯 DOM 扫描 | 遍历评论区 Shadow DOM，不做网络拦截，不依赖 B 站 API |
-| 🤖 AI 判定 | DeepSeek API 批量判定，带视频标题/简介上下文 |
-| 🚫 手动拉黑 | 每条评论自带拉黑按钮，一键屏蔽讨厌的用户 |
-| 📋 本地黑名单 | IndexedDB 持久化，block / high 级别自动拉黑 + 手动拉黑，以用户名 hash 为 key |
-| 🔄 智能缓存 | LRU 缓存 24h 过期，避免重复 API 调用 |
-| 👁️ 折叠模式 | 违规评论折叠显示，点开可查看 AI 判定原因（支持开关） |
-| 📊 统计面板 | Token 消耗、预估费用、违规严重度分布 |
-| ⚙️ 自定义 Prompt | 自由编写过滤规则，支持/反对立场可直接写进 Prompt |
-| 💰 自定义计费 | 支持任意模型的价格设定 |
-| 🛡️ 滚动拦截 | MutationObserver + scroll 双重监听，翻页/加载更多不漏 |
-
----
+AI 驱动的 B 站评论过滤器，支持关键词屏蔽、AI 规则学习、深色模式。
 
 ## 截图
 
+### 设置面板
 ![设置面板](assets/settings.png)
+
+### 统计面板
 ![统计面板](assets/statistic.png)
+
+### AI学习面板
 ![AI学习面板](assets/AI.png)
 
 ---
 
-## 📦 安装
+## 功能特性
 
+### 评论过滤
+- **本地关键词过滤** - 支持普通关键词和正则表达式，零延迟即时生效
+- **AI 规则过滤** - 支持 DeepSeek、Mimo 等 AI 服务，语义理解更精准
+- **简介复读机检测** - 自动屏蔽与视频简介相同的评论
+- **缓存机制** - LRU 缓存避免重复 API 调用
+
+### AI 学习
+- **标记评论** - 在评论菜单中标记不想看的评论
+- **点踩快速标记** - 点击评论点踩自动添加到待学习列表
+- **规则学习** - AI 分析标记评论，自动生成正则和关键词规则
+- **提示词学习** - 生成总结性提示词用于 AI 判断
+- **反馈学习** - 点赞/点踩反馈影响 AI 规则生成
+
+### 数据管理
+- **标记评论导出/导入** - JSON 格式，支持增量导入
+- **关键词导入/导出** - JSON 格式
+- **本地持久化** - IndexedDB 存储，数据不丢失
+
+### 界面
+- **深色模式** - 支持亮色、暗色、跟随系统三种模式
+- **多标签页** - 设置、AI 学习、关键词、统计四个标签页
+- **统计面板** - 显示过滤数量、Token 消耗、费用估算
+- **屏蔽记录** - 按来源分组显示（用户规则/AI 规则/简介类/AI 判定/标记/缓存）
+
+## 安装
+
+### 方法一：直接安装
+1. 安装 [Tampermonkey](https://www.tampermonkey.net/) 或 [Violentmonkey](https://violentmonkey.github.io/) 浏览器扩展
+2. 将 `dist/bilibili-comment-block.user.js` 拖入扩展
+
+### 方法二：从源码构建
 ```bash
 git clone <repo-url>
-cd ruozhi-filter
+cd info-cocoon-amplifier-main
 npm install
 npm run build
 ```
+将 `dist/bilibili-comment-block.user.js` 拖入 Tampermonkey/Violentmonkey。
 
-将 `dist/ruozhi-filter.user.js` 拖入 Tampermonkey / Violentmonkey 即可。
+## 使用
 
----
-
-## 🚀 使用
-
+### 基础使用
 1. 打开任意 B 站视频页面
-2. 点击右下角 🧠 悬浮按钮 → 打开设置面板
-3. 填入 **DeepSeek API Key**，自定义 Prompt
-4. 保存设置，滚动到评论区 → 自动扫描 & 过滤
-5. 点击评论旁的 `🚫 拉黑` 按钮可手动屏蔽用户
-6. 切换到 **📊 统计** 标签查看 token 消耗
-7. 切换到 **📋 黑名单** 标签管理拉黑记录
-8. 控制台执行 `__ruozhi_diag()` 查看诊断信息
+2. 点击右下角 **R** 按钮打开设置面板
+3. 配置 API Key（可选，仅 AI 功能需要）
+4. 开始使用
 
----
+### AI 功能
+1. 在 **设置** 标签页配置 API Key
+2. 勾选 **启用自定义提示词**，填写过滤规则
+3. 在 **AI 学习** 标签页标记不想看的评论
+4. 点击 **开始学习** 生成过滤规则
 
-## 📝 Prompt 示例
+### 关键词过滤
+1. 切换到 **关键词** 标签页
+2. 输入关键词或正则表达式
+3. 点击添加，立即生效
+
+### 本地模式
+勾选 **本地模式** 后，断开 AI 连接，仅使用本地关键词和规则进行过滤，零延迟。
+
+## 配置说明
+
+| 配置项 | 说明 |
+|--------|------|
+| AI 服务提供商 | DeepSeek / Mimo (小米) / 自定义 |
+| API Key | AI 服务的密钥 |
+| 模型 | AI 模型名称 |
+| 本地模式 | 断开 AI，仅使用本地规则 |
+| 启用自定义提示词 | 勾选后显示提示词输入框 |
+| 显示屏蔽评论 | 开启后折叠显示，关闭后完全隐藏 |
+| Token 单价 | 双击费用设置，用于计算费用 |
+
+## 技术栈
+
+- TypeScript
+- Vite + vite-plugin-monkey
+- IndexedDB (idb)
+- DeepSeek / Mimo API
+
+## 项目结构
 
 ```
-请帮我识别以下评论中，具有明显性别对立、引战、人身攻击、煽动性、仇恨言论性质的内容。
-对严重违规的评论标记为 high 或 block 级别。
+src/
+├── main.ts          # 入口文件
+├── interceptor.ts   # DOM 扫描器
+├── filter.ts        # 过滤引擎
+├── api.ts           # AI API 通信
+├── db.ts            # IndexedDB 存储
+├── ui.ts            # 用户界面
+├── logger.ts        # 日志/黑名单面板
+├── types.ts         # 类型定义
+└── globals.d.ts     # Tampermonkey API 声明
 ```
 
----
+## 致谢
 
-## 🛠 技术栈
+本项目基于 [info-cocoon-amplifier](https://github.com/shawn020308/info-cocoon-amplifier) 二次开发。
 
-`TypeScript` · `Vite` · `vite-plugin-monkey` · `IndexedDB (idb)` · `DeepSeek API`
+## 许可证
 
----
-
-## 📄 License
-
-MIT © 2024
+MIT
