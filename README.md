@@ -2,7 +2,6 @@
   <img src="https://img.shields.io/badge/状态-能用就行-brightgreen?style=flat-square" alt="status" />
   <img src="https://img.shields.io/badge/License-MIT-blue?style=flat-square" alt="license" />
   <img src="https://img.shields.io/badge/PR-welcome-ff69b4?style=flat-square" alt="pr" />
-  <img src="https://img.shields.io/badge/信息茧房-放大器-purple?style=flat-square" alt="cocoon" />
 </p>
 
 <h1 align="center">🧠 信息茧房放大器</h1>
@@ -43,15 +42,11 @@
 
 ---
 
-## 📸 截图
+## 截图
 
-### 设置面板 & 统计
-
-![设置面板](assets/main-panel.png)
-
-### 黑名单管理
-
-![统计面板](assets/count-panel.png)
+![设置面板](assets/settings.png)
+![统计面板](assets/statistic.png)
+![AI学习面板](assets/AI.png)
 
 ---
 
